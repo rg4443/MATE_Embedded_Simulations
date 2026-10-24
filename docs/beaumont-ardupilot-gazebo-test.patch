@@ -1,0 +1,46 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 282358e..642821f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -18,0 +19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
++find_package(Qt5 COMPONENTS Core REQUIRED)
+@@ -86,3 +86,0 @@ find_package(RapidJSON REQUIRED)
+-find_package(OpenCV REQUIRED)
+-
+-pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-app-1.0)
+@@ -131,14 +128,0 @@ target_link_libraries(CameraZoomPlugin PRIVATE
+-add_library(GstCameraPlugin
+-  SHARED
+-  src/GstCameraPlugin.cc
+-)
+-target_include_directories(GstCameraPlugin PRIVATE
+-  include
+-  ${OpenCV_INCLUDE_DIRS}
+-  ${GST_INCLUDE_DIRS}
+-)
+-target_link_libraries(GstCameraPlugin PRIVATE
+-  gz-sim${GZ_SIM_VER}::gz-sim${GZ_SIM_VER}
+-  ${OpenCV_LIBS}
+-  ${GST_LINK_LIBRARIES}
+-)
+@@ -154 +137,0 @@ install(
+-  GstCameraPlugin
+@@ -185 +168 @@ if(${ament_cmake_FOUND})
+-endif()
+\ No newline at end of file
++endif()
+diff --git a/src/ArduPilotPlugin.cc b/src/ArduPilotPlugin.cc
+index 8309c37..5554c38 100755
+--- a/src/ArduPilotPlugin.cc
++++ b/src/ArduPilotPlugin.cc
+@@ -22,0 +23,2 @@
++#include <gz/msgs/int32.pb.h>
++#include <cmath>
+@@ -649 +651 @@ void gz::sim::systems::ArduPilotPlugin::LoadControlChannels(
+-          node.Advertise<msgs::Double>(control.cmdTopic);
++          node.Advertise<msgs::Int32>(control.cmdTopic);
+@@ -1319,2 +1321,2 @@ void gz::sim::systems::ArduPilotPlugin::ApplyMotorForces(
+-      msgs::Double cmd;
+-      cmd.set_data(this->dataPtr->controls[i].cmd);
++      msgs::Int32 cmd;
++      cmd.set_data(static_cast<int32_t>(std::lround(this->dataPtr->controls[i].cmd)));

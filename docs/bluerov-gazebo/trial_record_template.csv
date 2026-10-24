@@ -1,0 +1,1 @@
+trial_id,layout,ardupilot_revision,rov_sim_revision,connector_revision,model_assumptions,mode,start_pose_m,control_axis,control_input,control_duration_s,sitl_bin_log,gazebo_pose_jsonl,depth_change_m,travel_distance_m,heading_change_deg,settling_time_s,notes
