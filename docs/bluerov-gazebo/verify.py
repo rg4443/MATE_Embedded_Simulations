@@ -69,6 +69,12 @@ def verify_frame(root, frame, spec):
         assert thrusters[index - 1].findtext("topic") == f"motor_{index}"
         
         link = model.find(f"./link[@name='motor_{index}']")
+        visual = link.find("visual[@name='housing']/geometry/cylinder")
+        assert abs(float(link.findtext("inertial/mass")) - generate.T200_MASS_KG) < 1e-8
+        assert abs(float(visual.findtext("radius")) - generate.T200_RADIUS_M) < 1e-8
+        assert abs(float(visual.findtext("length")) - generate.T200_LENGTH_M) < 1e-8
+        propeller_diameter = float(thrusters[index - 1].findtext("propeller_diameter"))
+        assert abs(propeller_diameter - generate.T200_PROPELLER_DIAMETER_M) < 1e-8
         x, y, z, roll, pitch, yaw = map(float, link.findtext("pose").split())
         actual_axis = (
             math.cos(yaw) * math.sin(pitch) * math.cos(roll) + math.sin(yaw) * math.sin(roll),
@@ -100,6 +106,41 @@ def verify_frame(root, frame, spec):
                 assert response < 0, (frame, axis, response)
             else:
                 assert response > 0, (frame, axis, response)
+
+    return rank
+
+
+def verify_selected(root, plant):
+    """Check one generated model and world against its resolved configuration."""
+    frame = plant["frame"]
+    spec = dict(generate.FRAMES[frame], positions=plant["motor_positions_m"])
+    rank = verify_frame(root, frame, spec)
+
+    if rank != plant["wrench_rank"]:
+        raise ValueError(f"generated wrench rank {rank} differs from configuration")
+
+    model_name = frame.replace("-", "_") + "_test"
+    model = ET.parse(root / "models" / model_name / "model.sdf").getroot().find("model")
+    body = model.find("link[@name='rov_body']")
+    actual_body_m = tuple(map(float, body.findtext("visual/geometry/box/size").split()))
+    actual_mass = sum(float(link.findtext("inertial/mass")) for link in model.findall("link"))
+    
+    assert max(abs(a - b) for a, b in zip(actual_body_m, plant["body_m"])) < 1e-8
+    assert abs(actual_mass - plant["mass_kg"]) < 1e-8
+
+    world = ET.parse(root / "worlds" / f"{frame}.sdf").getroot().find("world")
+    buoyancy = world.find("plugin[@name='gz::sim::systems::EER_Buoyancy']/set_volume")
+    
+    assert abs(float(buoyancy.findtext("volume")) - plant["displaced_volume_m3"]) < 1e-8
+    
+    cob = tuple(map(float, buoyancy.findtext("center_of_volume").split()))
+
+    assert abs(cob[2] - plant["center_of_buoyancy_z_m"]) < 1e-8
+    assert cob[0] == cob[1] == 0
+
+    params = (root / "params" / f"{frame}.parm").read_text()
+
+    assert params == f"FRAME_CONFIG {plant['frame_config']}\n"
 
     return rank
 

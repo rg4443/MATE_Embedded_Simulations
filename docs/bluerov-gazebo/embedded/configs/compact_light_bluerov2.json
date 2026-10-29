@@ -1,0 +1,21 @@
+{
+    "schema_version": 1,
+    "plant": {
+        "frame": "bluerov2",
+        "body_m": [0.45, 0.32, 0.15],
+        "mass_kg": 7.5,
+        "displaced_volume_m3": 0.0075,
+        "center_of_buoyancy_z_m": 0.01875,
+        "motor_positions_m": [
+            [0.1875, 0.1422222222, 0],
+            [0.1875, -0.1422222222, 0],
+            [-0.1875, 0.1422222222, 0],
+            [-0.1875, -0.1422222222, 0],
+            [0, 0.1422222222, 0],
+            [0, -0.1422222222, 0]
+        ],
+        "motor_channels": [0, 1, 2, 3, 4, 5]
+    },
+    "architecture": "pi_pixhawk",
+    "scenario": "baseline"
+}

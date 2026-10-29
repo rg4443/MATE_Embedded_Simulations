@@ -1,6 +1,3 @@
-#!/usr/bin/env bash
-# Prepare the locally built dependencies and generated BlueROV worlds on macOS.
-
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

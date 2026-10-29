@@ -1,0 +1,61 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Sim prep, V.1",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["schema_version", "plant", "architecture", "scenario"],
+    "properties": {
+        "schema_version": { "const": 1 },
+        "plant": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "frame",
+                "body_m",
+                "mass_kg",
+                "displaced_volume_m3",
+                "center_of_buoyancy_z_m",
+                "motor_positions_m",
+                "motor_channels"
+            ],
+            "properties": {
+                "frame": { "enum": ["bluerov1", "bluerov2", "bluerov2-heavy"] },
+                "body_m": { "$ref": "#/$defs/positive_vec3" },
+                "mass_kg": { "type": "number", "exclusiveMinimum": 0 },
+                "displaced_volume_m3": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                },
+                "center_of_buoyancy_z_m": { "type": "number" },
+                "motor_positions_m": {
+                    "type": "array",
+                    "minItems": 6,
+                    "maxItems": 8,
+                    "items": { "$ref": "#/$defs/vec3" }
+                },
+                "motor_channels": {
+                    "type": "array",
+                    "minItems": 6,
+                    "maxItems": 8,
+                    "items": { "type": "integer", "minimum": 0, "maximum": 7 }
+                }
+            }
+        },
+        "architecture": { "enum": ["pi_pixhawk", "pi_navigator"] },
+        "scenario": { "const": "baseline" }
+    },
+    "$defs": {
+        "vec3": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": "number" }
+        },
+        "positive_vec3": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": "number", "exclusiveMinimum": 0 }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+case_id,layout,body_length_cm,body_width_cm,body_height_cm,outer_length_cm,outer_width_cm,outer_height_cm,outer_sum_cm,mass_kg,displaced_volume_m3,size_band_cm,weight_band_kg
+compact_light,bluerov1,45.0,32.0,15.0,45.0,36.444,16.188,97.632,7.5,0.0075,120,8
+compact_light,bluerov2,45.0,32.0,15.0,48.107,39.051,15.0,102.158,7.5,0.0075,120,8
+compact_light,bluerov2-heavy,45.0,32.0,15.0,48.107,39.051,15.0,102.158,7.5,0.0075,120,8
+compact_mid,bluerov1,45.0,32.0,15.0,45.0,36.444,16.188,97.632,11.5,0.0115,120,12
+compact_mid,bluerov2,45.0,32.0,15.0,48.107,39.051,15.0,102.158,11.5,0.0115,120,12
+compact_mid,bluerov2-heavy,45.0,32.0,15.0,48.107,39.051,15.0,102.158,11.5,0.0115,120,12
+roomy_light,bluerov1,58.0,44.0,18.0,58.0,47.111,18.625,123.736,7.5,0.0075,140,8
+roomy_light,bluerov2,58.0,44.0,18.0,58.94,49.718,18.0,126.658,7.5,0.0075,140,8
+roomy_light,bluerov2-heavy,58.0,44.0,18.0,58.94,49.718,18.0,126.658,7.5,0.0075,140,8

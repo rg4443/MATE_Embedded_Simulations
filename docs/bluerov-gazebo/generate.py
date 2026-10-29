@@ -4,6 +4,11 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+T200_RADIUS_M = 0.05
+T200_LENGTH_M = 0.113
+T200_MASS_KG = 0.427
+T200_PROPELLER_DIAMETER_M = 0.076
+
 FRAMES = {
     "bluerov1": {
         "frame_config": 0,
@@ -114,14 +119,18 @@ def add_thruster(model, namespace, number, position, factors, plugin_suffix):
     link = ET.SubElement(model, "link", {"name": name})
 
     text(link, "pose", pose)
-    inertial(link, 0.002, 0.00001, 0.00001, 0.00001)
+    
+    transverse_inertia = T200_MASS_KG * (3 * T200_RADIUS_M ** 2 + T200_LENGTH_M ** 2) / 12
+    axial_inertia = T200_MASS_KG * T200_RADIUS_M ** 2 / 2
+    inertial(link, T200_MASS_KG, transverse_inertia, transverse_inertia, axial_inertia)
 
     visual = ET.SubElement(link, "visual", {"name": "housing"})
     geometry = ET.SubElement(visual, "geometry")
     cylinder = ET.SubElement(geometry, "cylinder")
 
-    text(cylinder, "radius", 0.04)
-    text(cylinder, "length", 0.07)
+    
+    text(cylinder, "radius", T200_RADIUS_M)
+    text(cylinder, "length", T200_LENGTH_M)
 
     joint = ET.SubElement(model, "joint", {"name": f"{name}_joint", "type": "revolute"})
 
@@ -144,13 +153,13 @@ def add_thruster(model, namespace, number, position, factors, plugin_suffix):
         ("use_esc_cmd", "true"),
         ("fluid_density", 1000),
         ("topic", name),
-        ("propeller_diameter", 0.076),
+        ("propeller_diameter", T200_PROPELLER_DIAMETER_M),
     ):
         text(thruster, tag, value)
 
     return name
 
-def add_connector(model, namespace, count, connector_lib):
+def add_connector(model, namespace, count, connector_lib, channels=None):
     plugin = ET.SubElement(model, "plugin", {
         "filename": str(connector_lib),
         "name": "ArduPilotPlugin",
@@ -172,7 +181,8 @@ def add_connector(model, namespace, count, connector_lib):
 
     for index in range(count):
         name = f"motor_{index + 1}"
-        control = ET.SubElement(plugin, "control", {"channel": str(index)})
+        channel = index if channels is None else channels[index]
+        control = ET.SubElement(plugin, "control", {"channel": str(channel)})
 
         for tag, value in (
             ("jointName", f"{name}_joint"),
@@ -215,7 +225,8 @@ def add_hydrodynamics(model, plugin_suffix):
     ):
         text(plugin, tag, value)
 
-def write_model(directory, frame, spec, connector_lib, plugin_suffix):
+def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
+                body_m=None, mass_kg=12.0, channels=None):
     directory.mkdir(parents=True, exist_ok=True)
 
     model_name = frame.replace("-", "_") + "_test"
@@ -223,13 +234,28 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix):
     model = ET.SubElement(root, "model", {"name": model_name})
     body = ET.SubElement(model, "link", {"name": "rov_body"})
 
-    inertial(body, 12 - 0.002 * len(spec["factors"]), 0.18, 0.25, 0.32)
+    legacy_body = body_m is None
+
+    if body_m is None: body_m = (0.6, 0.45, 0.16)
+
+    body_mass = mass_kg - T200_MASS_KG * len(spec["factors"])
+
+    if body_mass <= 0: raise ValueError("total mass must exceed the combined T200 thruster mass")
+    
+    length, width, height = body_m
+    if legacy_body:
+        inertial(body, body_mass, 0.18, 0.25, 0.32)
+    else:
+        inertial(body, body_mass,
+                 body_mass * (width * width + height * height) / 12,
+                 body_mass * (length * length + height * height) / 12,
+                 body_mass * (length * length + width * width) / 12)
 
     for tag in ("visual", "collision"):
         part = ET.SubElement(body, tag, {"name": "body"})
         geometry = ET.SubElement(part, "geometry")
         box = ET.SubElement(geometry, "box")
-        text(box, "size", "0.6 0.45 0.16")
+        text(box, "size", " ".join(map(str, body_m)))
 
     imu = ET.SubElement(body, "sensor", {"name": "imu", "type": "imu"})
 
@@ -240,7 +266,7 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix):
         add_thruster(model, model_name, number, position, factors, plugin_suffix)
 
     add_hydrodynamics(model, plugin_suffix)
-    add_connector(model, model_name, len(spec["factors"]), connector_lib)
+    add_connector(model, model_name, len(spec["factors"]), connector_lib, channels)
 
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(directory / "model.sdf", encoding="utf-8", xml_declaration=True)
@@ -257,7 +283,8 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix):
     
     return model_name
 
-def write_world(path, model_name, plugin_suffix):
+def write_world(path, model_name, plugin_suffix, *, displaced_volume_m3=0.012,
+                center_of_buoyancy_z_m=0.02):
     root = ET.Element("sdf", {"version": "1.10"})
     world = ET.SubElement(root, "world", {"name": model_name + "_world"})
     physics = ET.SubElement(world, "physics", {"name": "3ms", "type": "ignored"})
@@ -283,8 +310,8 @@ def write_world(path, model_name, plugin_suffix):
     volume = ET.SubElement(buoyancy, "set_volume")
 
     text(volume, "entity", model_name + "::rov_body")
-    text(volume, "volume", 0.012)
-    text(volume, "center_of_volume", "0 0 0.02")
+    text(volume, "volume", displaced_volume_m3)
+    text(volume, "center_of_volume", f"0 0 {center_of_buoyancy_z_m}")
 
     model = ET.SubElement(world, "include")
 
