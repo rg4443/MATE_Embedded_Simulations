@@ -36,7 +36,13 @@ CENTERS = {
     "side5cm": (0.0, 0.05, 0.0),
 }
 
-CONDITIONS = ("neutral", "dive")
+CONDITION_COMMANDS = {
+    "neutral": ("THROTTLE", 1500),
+    "dive": ("THROTTLE", 1400),
+    "forward": ("FORWARD", 1600),
+    "lateral": ("LATERAL", 1600),
+}
+CONDITIONS = tuple(CONDITION_COMMANDS)
 
 SUMMARY_COLUMNS = (
     "trial_id", "case_id", "layout", "mass_kg", "com_position", "target_com_x_m", "target_com_y_m",
@@ -245,7 +251,7 @@ def run_trial(case_id, layout, center_name, condition, repeat):
     motor_values = []
     shared = {"phase": "startup"}
     start = time.monotonic()
-    pwm = 1500 if condition == "neutral" else 1400
+    rcmap_name, pwm = CONDITION_COMMANDS[condition]
     frame_spec = generate.FRAMES[layout]
     row = dict.fromkeys(SUMMARY_COLUMNS, "")
 
@@ -290,7 +296,7 @@ def run_trial(case_id, layout, center_name, condition, repeat):
         link.mav.command_long_send(SYSID, 1, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
                                    mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, 100000, 0, 0, 0, 0, 0)
         
-        throttle_channel = get_parameter(link, "RCMAP_THROTTLE")
+        command_channel = get_parameter(link, f"RCMAP_{rcmap_name}")
         model_name = layout.replace("-", "_") + "_test"
         world_name = model_name + "_world"
 
@@ -300,7 +306,7 @@ def run_trial(case_id, layout, center_name, condition, repeat):
                                 text=True, bufsize=1, start_new_session=True)
         
         thread = threading.Thread(target=base.pose_reader,
-                                  args=(pose, trial_id, layout, "dive", shared, samples, start), daemon=True)
+                                  args=(pose, trial_id, layout, condition, shared, samples, start), daemon=True)
         
         thread.start()
 
@@ -310,9 +316,9 @@ def run_trial(case_id, layout, center_name, condition, repeat):
 
         motor_count = len(frame_spec["factors"])
 
-        hold_rc(link, throttle_channel, 1500, 1.5, "baseline", shared, motor_count, motor_values)
-        hold_rc(link, throttle_channel, pwm, 2.0, "command", shared, motor_count, motor_values)
-        hold_rc(link, throttle_channel, 1500, 0.5, "release", shared, motor_count, motor_values)
+        hold_rc(link, command_channel, 1500, 1.5, "baseline", shared, motor_count, motor_values)
+        hold_rc(link, command_channel, pwm, 2.0, "command", shared, motor_count, motor_values)
+        hold_rc(link, command_channel, 1500, 0.5, "release", shared, motor_count, motor_values)
         
         baseline_count, command_count, movement = summarize_pose(samples)
 
@@ -360,7 +366,7 @@ def append_rows(path, columns, rows):
 
         writer.writerows(rows)
 
-def run_all(repeats, limit, cases, layouts, centers):
+def run_all(repeats, limit, cases, layouts, centers, conditions):
     completed = {row["trial_id"] for row in load_rows(OUTPUT / "trial_summary.csv") if row["status"] == "measured"}
     count = 0
 
@@ -368,8 +374,8 @@ def run_all(repeats, limit, cases, layouts, centers):
         for layout in layouts:
             for center_name in centers:
                 for repeat in range(1, repeats + 1):
-                    conditions = CONDITIONS if repeat % 2 else tuple(reversed(CONDITIONS))
-                    for condition in conditions:
+                    ordered_conditions = conditions if repeat % 2 else tuple(reversed(conditions))
+                    for condition in ordered_conditions:
                         trial_id = f"{case_id}-{layout}-{center_name}-{condition}-{repeat:02d}"
                         
                         if trial_id in completed: continue
@@ -388,6 +394,7 @@ def run_all(repeats, limit, cases, layouts, centers):
                         
                         if row["status"] != "measured": raise RuntimeError(f"Trial failed: {trial_id}: {row['error']}")
                         
+                        completed.add(trial_id)
                         count += 1
 
                         if limit and count >= limit: return
@@ -401,6 +408,7 @@ def main():
     parser.add_argument("--case", choices=CASES, action="append")
     parser.add_argument("--layout", choices=generate.FRAMES, action="append")
     parser.add_argument("--center", choices=CENTERS, action="append")
+    parser.add_argument("--condition", choices=CONDITIONS, action="append")
     
     args = parser.parse_args()
     
@@ -410,7 +418,8 @@ def main():
         prepare_models()
     else:
         run_all(args.repeats, args.limit, args.case or CASES,
-                args.layout or generate.FRAMES, args.center or CENTERS)
+                args.layout or generate.FRAMES, args.center or CENTERS,
+                tuple(dict.fromkeys(args.condition or CONDITIONS)))
 
 if __name__ == "__main__":
     main()
