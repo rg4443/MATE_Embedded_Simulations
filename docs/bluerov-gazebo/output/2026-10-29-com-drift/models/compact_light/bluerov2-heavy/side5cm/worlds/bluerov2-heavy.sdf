@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.10">
+  <world name="bluerov2_heavy_test_world">
+    <physics name="3ms" type="ignored">
+      <max_step_size>0.003</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="plugins/libEER_Buoyancy.dylib" name="gz::sim::systems::EER_Buoyancy">
+      <uniform_fluid_density>1000</uniform_fluid_density>
+      <set_volume>
+        <entity>bluerov2_heavy_test::rov_body</entity>
+        <volume>0.0075</volume>
+        <center_of_volume>0 0 0.01875</center_of_volume>
+      </set_volume>
+    </plugin>
+    <include>
+      <uri>model://bluerov2_heavy_test</uri>
+      <pose>0 0 -1 0 0 0</pose>
+    </include>
+  </world>
+</sdf>
