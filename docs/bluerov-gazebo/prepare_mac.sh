@@ -38,6 +38,11 @@ if [[ $(git -C "$rov_sim_dir" rev-parse HEAD) != 3597a5c2c616a1c6ca59070d4ff3e61
     echo "rov-sim checkout does not match the pinned, patched task version: $rov_sim_dir" >&2
     exit 1
 fi
+
+if ! git -C "$rov_sim_dir" apply --reverse --check "$package_dir/rov-sim-added-mass.patch" 2>/dev/null; then
+    git -C "$rov_sim_dir" apply "$package_dir/rov-sim-added-mass.patch"
+fi
+
 if [[ ! -d "$connector_dir/.git" ]]; then
     git clone https://github.com/ArduPilot/ardupilot_gazebo.git "$connector_dir"
     git -C "$connector_dir" checkout 082a0fe231f6e63bc8d1598f1cba461d9e2ea7f5

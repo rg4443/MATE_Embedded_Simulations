@@ -1,0 +1,8 @@
+diff --git a/src/EER_Hydrodynamics.cc b/src/EER_Hydrodynamics.cc
+--- a/src/EER_Hydrodynamics.cc
++++ b/src/EER_Hydrodynamics.cc
+@@ -496,9 +496,9 @@
+ 
+   this->dataPtr->prevState = state;
+ 
++  const Eigen::VectorXd kAmassVec = this->dataPtr->Ma * stateDot;
