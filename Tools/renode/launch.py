@@ -2007,7 +2007,8 @@ def main():
                 for endpoint in i2c_endpoints(
                     gen_board.ATTACHABLE_DEVICES[item['device']])
             }
-            can_add = addresses.isdisjoint(occupied_addresses)
+            can_add = addresses.isdisjoint(occupied_addresses | port.get('onboard_compasses', {}).keys())
+        
         add_device.setEnabled(can_add)
         item = port_tree.currentItem()
         attachment = tree_attachment(item)
@@ -2046,6 +2047,12 @@ def main():
         if port is None or device_id is None:
             return
         device = gen_board.ATTACHABLE_DEVICES[device_id]
+        try:
+            if gen_board.is_onboard_compass_attachment(port, device):
+                return
+        except ValueError as error:
+            launcher.log('[attach] %s' % error)
+            return
         attachment = {
             'port': port['id'],
             'device': device_id,
@@ -2189,6 +2196,11 @@ def main():
                 device = gen_board.ATTACHABLE_DEVICES.get(device_id)
                 if port is None or device is None or device['bus'] != port['bus']:
                     raise ValueError('attachment target is unavailable')
+                
+                if gen_board.is_onboard_compass_attachment(port, device):
+                    launcher.log('[settings] %s already modeled onboard with its hwdef orientation' % device['name'])
+                    continue
+
                 if port['bus'] == 'uart':
                     if port['id'] in occupied_uart:
                         raise ValueError('%s is already occupied' % port['id'])

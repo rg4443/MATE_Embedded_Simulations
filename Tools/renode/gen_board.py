@@ -533,7 +533,7 @@ def _can_buses(app, family):
             if bus in app.bytype]
 
 
-def _configuration_ports(app, family):
+def _configuration_ports(app, family, onboard_compasses=None):
     ports = []
     serial_order = app.get_config(
         'SERIAL_ORDER', required=False, aslist=True) or []
@@ -556,13 +556,19 @@ def _configuration_ports(app, family):
         'I2C_ORDER', required=False, aslist=True) or []
     for index, peripheral in enumerate(i2c_order):
         if peripheral in family['i2cs']:
-            ports.append({
+            port = {
                 'id': 'I2C%u' % index,
                 'name': 'I2C bus %u (%s)' % (index, peripheral),
                 'bus': 'i2c',
                 'peripheral': peripheral,
                 'index': index,
-            })
+            }
+
+            compasses = (onboard_compasses or {}).get(peripheral)
+            
+            if compasses:port['onboard_compasses'] = compasses
+
+            ports.append(port)
 
     for index, (bus, peripheral) in enumerate(_can_buses(app, family)):
         ports.append({
@@ -581,13 +587,38 @@ def configuration_ports(root, board, outdir):
     boards = supported_boards(root)
     if board not in boards:
         raise ValueError('%s is not a supported Renode target' % board)
-    app = _compile_hwdef(
-        root, _hwdef_root(root) / board / 'hwdef.dat', Path(outdir))
-    return _configuration_ports(app, FAMILIES[app.mcu_type])
+    outdir = Path(outdir)
+
+    app = _compile_hwdef(root, _hwdef_root(root) / board / 'hwdef.dat', outdir)
+    
+    family = FAMILIES[app.mcu_type]
+    _, _, _, _, _, onboard_compasses = _sensor_devices(
+        app, family, _defines(outdir / 'hwdef.h'), outdir / 'fram.img', [])
+    
+    return _configuration_ports(app, family, onboard_compasses)
 
 
-def _resolve_attachments(app, family, attachments):
-    ports = {port['id']: port for port in _configuration_ports(app, family)}
+def is_onboard_compass_attachment(port, device):
+    onboard = port.get('onboard_compasses', {})
+
+    if not onboard or device['bus'] != 'i2c': return False
+
+    endpoints = i2c_endpoints(device)
+
+    for endpoint in endpoints:
+        address = endpoint['address']
+
+        if address not in onboard: continue
+
+        if len(endpoints) == 1 and endpoint['model'] == onboard[address]: return True
+        raise ValueError('%s address 0x%02X is reserved for onboard %s' %
+                         (port['name'], address, onboard[address]))
+    
+    return False
+
+
+def _resolve_attachments(app, family, attachments, onboard_compasses):
+    ports = {port['id']: port for port in _configuration_ports(app, family, onboard_compasses)}
     resolved = []
     occupied = set()
     occupied_physics = {}
@@ -630,6 +661,8 @@ def _resolve_attachments(app, family, attachments):
                     not 0 <= node_id <= 127):
                 raise ValueError('%s node ID must be from 0 to 127' %
                                  device['name'])
+        if is_onboard_compass_attachment(port, device):
+            continue
         if port['bus'] == 'uart' and port_id in occupied:
             raise ValueError('%s already has an attached device' % port['name'])
         if port['bus'] == 'i2c':
@@ -1107,6 +1140,7 @@ def _sensor_devices(config, family, defines, fram_path, warnings,
 
     compass_models = {'IST8310': 'Sensors.AP_IST8310', 'RM3100': 'Sensors.AP_RM3100'}
     compass_locations = imu_locations | baro_locations
+    onboard_compasses = {}
 
     for index, compass in enumerate(config.compass_list):
         model = compass_models.get(compass.driver)
@@ -1125,6 +1159,7 @@ def _sensor_devices(config, family, defines, fram_path, warnings,
         if bus not in family['i2cs'] or rotation is None or location in compass_locations: continue
        
         compass_locations.add(location)
+        onboard_compasses.setdefault(bus, {})[device.busaddr] = model
 
         declarations += [
             'compass%d: %s @ %s 0x%02X' % (index, model, bus.lower(), device.busaddr),
@@ -1193,7 +1228,7 @@ def _sensor_devices(config, family, defines, fram_path, warnings,
             chip_selects.setdefault((cs.port, cs.pin), []).append(
                 '%s@%d' % (mux, address))
 
-    return declarations, chip_selects, has_fram, emulated_imus, spi_sdcard
+    return declarations, chip_selects, has_fram, emulated_imus, spi_sdcard, onboard_compasses
 
 
 def _iomcu_device(root, app, family, defines, address, warnings,
@@ -1905,7 +1940,7 @@ def _platform(root, board, app, outdir, fram_path, is_periph, warnings,
                          (gpio, pin.port, pin.pin))
         lines.append('')
         address += 4
-    sensor_lines, chip_selects, has_fram, emulated_imus, spi_sdcard = _sensor_devices(
+    (sensor_lines, chip_selects, has_fram, emulated_imus, spi_sdcard, onboard_compasses) = _sensor_devices(
         app, family, defines, fram_path, warnings,
         sigrok_capture['bus'] if sigrok_capture else None, num_imus, imu_names)
     lines += sensor_lines
@@ -1924,7 +1959,7 @@ def _platform(root, board, app, outdir, fram_path, is_periph, warnings,
     lines += _timer_actuator_devices(
         app, family, iomcu_uart, alloc, warnings)
 
-    resolved_attachments = _resolve_attachments(app, family, attachments)
+    resolved_attachments = _resolve_attachments(app, family, attachments, onboard_compasses)
 
     def periph_uart(port_name, port_value):
         index = _constant_integer(port_value)

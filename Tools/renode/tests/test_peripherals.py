@@ -150,10 +150,38 @@ def test_pixhawk6c_compass_and_depth_platform(tmp_path):
         attachments=[{'device': 'keller-depth', 'port': 'I2C1'}])
     
     platform = generated['repl'].read_text()
-    
+
     assert 'Sensors.AP_IST8310 @ i2c4 0x0C\n    Rotation: 0' in platform
     assert 'Sensors.AP_RM3100 @ i2c4 0x20\n    Rotation: 8' in platform
     assert 'Sensors.AP_Baro_KellerLD_Depth @ i2c1 0x40' in platform
+
+
+def test_pixhawk6c_ignores_legacy_onboard_compass_attachment(tmp_path):
+    generated = gen_board.generate(
+        ROOT, 'Pixhawk6C', tmp_path / 'generated',
+        attachments=[
+            {'device': 'rm3100-compass', 'port': 'I2C0', 'configuration': {'orientation': 0}},
+            {'device': 'rm3100-compass', 'port': 'I2C1'},
+        ])
+    
+    platform = generated['repl'].read_text()
+
+    assert platform.count('@ i2c4 0x20') == 1
+    assert 'Sensors.AP_RM3100 @ i2c4 0x20\n    Rotation: 8' in platform
+    assert 'configDevice1: Sensors.AP_RM3100 @ i2c1 0x20' in platform
+    assert [attachment['id'] for attachment in generated['attachments']] == ['configDevice1']
+
+    ports = gen_board.configuration_ports(ROOT, 'Pixhawk6C', tmp_path / 'ports')
+    i2c0 = next(port for port in ports if port['id'] == 'I2C0')
+    
+    assert i2c0['onboard_compasses'] == {0x0C: 'Sensors.AP_IST8310', 0x20: 'Sensors.AP_RM3100'}
+    assert gen_board.is_onboard_compass_attachment(i2c0, gen_board.ATTACHABLE_DEVICES['rm3100-compass'])
+
+def test_pixhawk6c_rejects_conflicting_onboard_compass_attachment(tmp_path):
+    with pytest.raises(ValueError, match='0x0C is reserved for onboard'):
+        gen_board.generate(
+            ROOT, 'Pixhawk6C', tmp_path / 'generated',
+            attachments=[{'device': 'ak09916-compass', 'port': 'I2C0'}])
 
 
 def test_iomcu_timeout_and_keller_depth(tmp_path, renode):
