@@ -156,7 +156,13 @@ def observe_topic(topic, args, env, trace, event, processes, threads, session):
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.startswith(("esc_output_valid_", "esc_source_valid_")):
+                if event == "esc_sample_1":
+                    sample = record.get("data", [])
+                    if isinstance(sample, list) and len(sample) == 3 and sample[2] in (0, 1):
+                        trace.emit(event, input_pwm_us=sample[0], motor_command=sample[1],
+                                   output_valid=bool(sample[2]))
+                        
+                elif event.startswith(("esc_output_valid_", "esc_source_valid_")):
                     trace.emit(event, value=bool(record.get("data", False)))
                 else:
                     trace.emit(event, value=float(record.get("data", 0)))

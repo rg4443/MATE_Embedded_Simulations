@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from math import isfinite
 from pathlib import Path
 
 from pymavlink import mavutil
@@ -124,13 +125,20 @@ def wait_ready(path, process, timeout=8):
     raise TimeoutError(f"component did not create {path}")
 
 
-def observe_mavlink(link, sysid, channel, pwm, trace, command_id, seconds, fault_hooks=None):
+def request_servo_stream(link, sysid):
+    link.mav.command_long_send(sysid, 1, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                               0, mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, 100000, 0, 0, 0, 0, 0)
+
+def observe_mavlink(link, sysid, channel, pwm, trace, command_id, seconds, request_stream=False):
     deadline = time.monotonic() + seconds
     first_send = True
     samples = []
+    next_stream_request = 0
 
     while time.monotonic() < deadline:
-        if fault_hooks is not None: fault_hooks()
+        if request_stream and time.monotonic() >= next_stream_request:
+            request_servo_stream(link, sysid)
+            next_stream_request = time.monotonic() + 1
 
         values = [1500] * 8
         values[channel - 1] = pwm
@@ -146,9 +154,11 @@ def observe_mavlink(link, sysid, channel, pwm, trace, command_id, seconds, fault
         while time.monotonic() < until:
             message = link.recv_match(blocking=True, timeout=0.02)
 
-            if message is None:continue
+            if message is None or message.get_srcSystem() != sysid or message.get_srcComponent() != 1:
+                continue
             if message.get_type() == "HEARTBEAT":
                 trace.emit("topside_heartbeat", source_sysid=message.get_srcSystem(),
+                           source_compid=message.get_srcComponent(),
                            armed=bool(message.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED))
            
             if message.get_type() != "SERVO_OUTPUT_RAW": continue
@@ -158,6 +168,7 @@ def observe_mavlink(link, sysid, channel, pwm, trace, command_id, seconds, fault
             samples.append(outputs)
 
             trace.emit("autopilot_servo_output", command_id=command_id, pwm_us=outputs,
+                       source_sysid=sysid, source_compid=message.get_srcComponent(),
                        mavlink_seq=message.get_seq())
             
     return samples
@@ -188,6 +199,10 @@ def trace_fault_window(session, summary):
 
     if restored is not None:
         summary["fault"]["actual_command_window_s"] = (restored - onset) / 1e9
+        applied = summary["fault"].get("applied_monotonic_ns")
+        
+        if applied is not None: summary["fault"]["observed_hold_s"] = (restored - applied) / 1e9
+        
         summary["fault"]["observed_after_recovery_command"] = metrics_for(
             [row for row in rows if row["host_monotonic_ns"] > restored])
 
@@ -197,52 +212,98 @@ def verify_fault_effect(session, summary):
     forward = next(row["host_monotonic_ns"] for row in rows
                    if row["event"] == "topside_command_sent" and row["command_id"] == "forward")
     onset = summary["fault"].get("actual_onset_monotonic_ns")
-    initial = [row for row in rows if forward <= row["host_monotonic_ns"] < (onset or float("inf"))]
-    initial_motor = any(row["event"] == "gazebo_motor_1" and row.get("value") != 128 for row in initial)
-    
-    summary["initial_motor_response_observed"] = initial_motor
-    
-    if not initial_motor:
-        summary["status"] = "failed"
-        summary["error"] = "no non-neutral motor response before fault injection"
-    
     fault = summary["fault"]["name"]
-    
+    initial = [row for row in rows if forward <= row["host_monotonic_ns"]
+               and (onset is None or row["host_monotonic_ns"] < onset)]
+
+    def motor_running(selected):
+        return any(row["event"] == "esc_sample_1" and row["output_valid"]
+                   and row["motor_command"] != 128 for row in selected)
+
+    initial_motor = motor_running(initial)
+    summary["initial_motor_response_observed"] = initial_motor
+    if not initial_motor: summary.update(status="failed", error="no valid non-neutral motor response before fault injection")
+
     if fault == "none":
         return
-    
-    onset = summary["fault"]["actual_onset_monotonic_ns"]
     recovery = summary["fault"]["recovery_command_monotonic_ns"]
-    during = [row for row in rows if onset <= row["host_monotonic_ns"] <= recovery]
-    applied = next(row for row in during if row["event"] == "fault_applied")
+    applied = next(row for row in rows if row["event"] == "fault_applied"
+                   and onset <= row["host_monotonic_ns"] < recovery)
+    
+    restored = next(row for row in rows if row["event"] == "fault_recovery_command"
+                    and row["host_monotonic_ns"] >= recovery)
+    
+    applied_at = applied["host_monotonic_ns"]
+    during = [row for row in rows if applied_at <= row["host_monotonic_ns"] < recovery]
+    
+    release = next((row["host_monotonic_ns"] for row in rows
+                    if row["event"] == "topside_command_sent" and row["command_id"] == "release"), float("inf"))
+    
+    after = [row for row in rows if restored["host_monotonic_ns"] < row["host_monotonic_ns"] < release]
+    baseline = [row for row in rows if row["host_monotonic_ns"] < onset]
+
+    sysid = summary["ports"]["sysid"]
+
+    def vehicle_telemetry(selected):
+        return {row["event"] for row in selected
+                if row.get("source_sysid") == sysid and row.get("source_compid") == 1}
+
+    required_telemetry = {"topside_heartbeat", "autopilot_servo_output"}
     target_roles = set(summary["fault"]["targets"]) - {"esc_motor_1"}
-    stopped = {row["role"] for row in during if row["event"] == "process_stopped"}
-    expected_stops = target_roles - ({"serial_link"} if fault == "pi_failure" else set())
-
-    if fault == "usb_loss":
-        expected_stops = set()
-
-    effects = {"expected_processes_stopped": expected_stops <= stopped,
-               "unrelated_processes_untouched": not (stopped - target_roles),
-               "unrelated_active_processes_alive": all(
-                   value["alive"] for role, value in applied["after"].items()
-                   if role not in target_roles)}
+    expected_stops = target_roles - {"serial_link"} if fault in ("usb_loss", "pi_failure") else target_roles
     
-    component_events = [row["detail"]["event"] for row in rows
-                        if row["event"] == "component_event" and row.get("role") == "serial_link"]
+    stopped = {row["role"] for row in rows if row["event"] == "process_stopped"
+               and onset <= row["host_monotonic_ns"] < recovery}
     
-    if fault in ("usb_loss", "pi_failure"): effects["serial_link_toggled"] = "link_down" in component_events and "link_up" in component_events
+    restarted = {row["role"] for row in rows if row["event"] == "process_started"
+                 and recovery <= row["host_monotonic_ns"] <= restored["host_monotonic_ns"]}
+
+    effects = {
+        "baseline_telemetry": required_telemetry <= vehicle_telemetry(baseline),
+        "expected_processes_stopped": expected_stops <= stopped,
+        "unrelated_processes_untouched": stopped <= target_roles,
+        "unrelated_active_processes_alive": all(value["alive"] for role, value in applied["after"].items()
+                                               if role not in target_roles),
+        "expected_processes_restarted": expected_stops <= restarted,
+        "target_processes_alive_after_recovery": all(restored["after"].get(role, {}).get("alive", False)
+                                                    for role in target_roles),
+        "recovery_telemetry": required_telemetry <= vehicle_telemetry(after),
+    }
+
+    if fault in ("usb_loss", "pi_failure"):
+        serial_events = [row for row in rows if row["event"] == "component_event"
+                         and row.get("role") == "serial_link"]
+        effects["serial_link_toggled"] = (
+            any(row["detail"]["event"] == "link_down" and onset <= row["host_monotonic_ns"] < recovery
+                for row in serial_events)
+            and any(row["detail"]["event"] == "link_up" and row["host_monotonic_ns"] >= recovery
+                    for row in serial_events))
+
+    if fault in ("usb_loss", "pi_failure", "router_failure", "pixhawk_restart",
+                 "ardusub_failure", "shared_5v_loss"):
+        
+        quiet_start = applied_at + 200_000_000
+        quiet_window = [row for row in during if row["host_monotonic_ns"] >= quiet_start]
+        effects["telemetry_interrupted"] = (recovery - quiet_start >= 300_000_000
+                                            and not required_telemetry & vehicle_telemetry(quiet_window))
+        
     if fault == "esc_stuck_neutral":
-        observations = summary["fault"]["observed_during_fault"]
-        effects["esc_neutral_with_valid_source"] = (
-            128 in observations["gazebo_motor_1"]["distinct_values"] and
-            any(pwm != 1500 for pwm in observations["esc_raw_pwm_1"]["distinct_values"]) and
-            True in observations["esc_output_valid_1"]["distinct_values"])
-    
+        driven_pwm = {row["input_pwm_us"] for row in initial if row["event"] == "esc_sample_1"
+                      and row["motor_command"] != 128 and row["output_valid"]}
+        
+        effects["esc_neutral_with_valid_source"] = any(
+            row["event"] == "esc_sample_1" and row["motor_command"] == 128
+            and row["input_pwm_us"] in driven_pwm and row["output_valid"] for row in during)
+        
+        effects["esc_motor_response_restored"] = motor_running(after)
+
     if fault in ("navigator_io_failure", "pixhawk_restart", "ardusub_failure", "shared_5v_loss"):
-        effects["esc_output_became_invalid"] = (
-            False in summary["fault"]["observed_during_fault"]["esc_output_valid_1"]["distinct_values"])
-    
+        effects["esc_output_became_invalid"] = any(
+            row["event"] == "esc_sample_1" and not row["output_valid"]
+            and row["motor_command"] == 128 for row in during)
+        effects["esc_output_valid_after_recovery"] = any(
+            row["event"] == "esc_sample_1" and row["output_valid"] for row in after)
+
     summary["fault"]["effect_checks"] = effects
     
     if not all(effects.values()):
@@ -262,7 +323,9 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
     profile = resolved["architecture"]
     fault_targets = targets(profile, fault)
 
-    if fault_onset_s < 0 or fault_duration_s <= 0: raise ValueError("fault onset and duration must be positive")
+    if not isfinite(fault_onset_s) or not isfinite(fault_duration_s) or fault_onset_s <= 0 or fault_duration_s <= 0:
+        raise ValueError("fault onset and duration must be finite and positive")
+    
     if not 1100 <= command_pwm <= 1900 or command_pwm == 1500: raise ValueError("command PWM must be in 1100..1900 and non-neutral")
     if esc_mode == "legacy": raise ValueError("step 5 requires a virtual ESC mode")
     
@@ -406,6 +469,9 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
                                   ("/output_valid", f"esc_output_valid_{channel}")):
                 observe_topic(prefix + suffix, ["--json-output"], env, trace,
                               event, observers, observer_threads, session)
+                
+        observe_topic(f"/{model_name}/motor_1/esc_sample", ["--json-output"], env, trace,
+                      "esc_sample_1", observers, observer_threads, session)
         observe_topic(f"/{model_name}/motor_1/force", ["--json-output"], env, trace,
                       "gazebo_force_1", observers, observer_threads, session)
         observe_topic(f"/world/{model_name}_world/pose/info", ["--json-output"], env, trace,
@@ -414,9 +480,10 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
         link = mavutil.mavlink_connection(f"udpin:127.0.0.1:{ports['topside_udp']}", source_system=255)
         heartbeat = link.wait_heartbeat(timeout=35)
         
-        if heartbeat is None or heartbeat.get_srcSystem() != ports["sysid"]: raise TimeoutError("no expected ArduSub heartbeat through architecture path")
+        if heartbeat is None or heartbeat.get_srcSystem() != ports["sysid"] or heartbeat.get_srcComponent() != 1: raise TimeoutError("no expected ArduSub heartbeat through architecture path")
         
-        trace.emit("topside_heartbeat", source_sysid=heartbeat.get_srcSystem(), armed=False)
+        trace.emit("topside_heartbeat", source_sysid=heartbeat.get_srcSystem(),
+                   source_compid=heartbeat.get_srcComponent(), armed=False)
         
         actual_frame = read_parameter(link, "FRAME_CONFIG", ports["sysid"])
         
@@ -435,16 +502,9 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
 
         time.sleep(0.2)
 
-        link.mav.command_long_send(ports["sysid"], 1, mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-                                   0, mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, 100000, 0, 0, 0, 0, 0)
-       
+        request_servo_stream(link, ports["sysid"])
         arm(link, ports["sysid"], trace)
-
-        observe_mavlink(link, ports["sysid"], forward_channel, 1500, trace, "neutral", 0.5)
-
-        scenario_start = time.monotonic()
-        fault_started = False
-        fault_restored = False
+        observe_mavlink(link, ports["sysid"], forward_channel, 1500, trace, "neutral", 1.5)
 
         def set_esc_stuck(motor):
             topic = f"/{model_name}/esc/stuck_neutral_motor"
@@ -455,69 +515,63 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
            
             trace.emit("esc_fault_command", topic=topic, motor=motor)
 
-        def apply_fault():
-            nonlocal fault_started, fault_restored
-
-            elapsed = time.monotonic() - scenario_start
-
-            if fault == "none": return
-
-            if not fault_started and elapsed >= fault_onset_s:
-                fault_started = True
-                summary["fault"]["actual_onset_monotonic_ns"] = time.monotonic_ns()
-                trace.emit("fault_onset", name=fault, targets=fault_targets, seed=seed,
-                           requested_onset_s=fault_onset_s, requested_duration_s=fault_duration_s,
-                           before=managed.status())
-                
-                if fault == "shared_5v_loss":
-                    trace.emit("power_rail_state", rail="regulated_5v", powered=False,
-                               model="process availability only")
-                    
-                if fault == "esc_stuck_neutral": set_esc_stuck(1)
-                elif fault == "usb_loss": os.kill(managed.active["serial_link"].pid, signal.SIGUSR1)
-                elif fault == "pi_failure":
-                    managed.stop("router", fast=True)
-                    managed.stop("claw", fast=True)
-                    os.kill(managed.active["serial_link"].pid, signal.SIGUSR1)
-                else:
-                    for role in fault_targets:
-                        managed.stop(role, fast=True)
-
-                trace.emit("fault_applied", name=fault, after=managed.status())
-           
-            if fault_started and not fault_restored and elapsed >= fault_onset_s + fault_duration_s:
-                fault_restored = True
-                if fault == "esc_stuck_neutral": set_esc_stuck(0)
-                elif fault == "usb_loss": os.kill(managed.active["serial_link"].pid, signal.SIGUSR2)
-                elif fault == "pi_failure":
-                    os.kill(managed.active["serial_link"].pid, signal.SIGUSR2)
-                    start_claw()
-                    start_router()
-                elif fault == "shared_5v_loss":
-                    if profile == "pi_pixhawk":
-                        start_serial()
-                    else:
-                        start_io()
-
-                    start_sitl()
-                    start_claw()
-                    start_router()
-                else:
-                    for role in fault_targets:
-                        {"router": start_router, "sitl": start_sitl,
-                         "navigator_io": start_io}[role]()
-                summary["fault"]["recovery_command_monotonic_ns"] = time.monotonic_ns()
-                if fault == "shared_5v_loss":
-                    trace.emit("power_rail_state", rail="regulated_5v", powered=True,
-                               model="process availability only")
-                trace.emit("fault_recovery_command", name=fault, after=managed.status())
-
-        duration = max(4.5, fault_onset_s + fault_duration_s + 5.0) if fault != "none" else 3.0
         samples = observe_mavlink(link, ports["sysid"], forward_channel, command_pwm,
-                                  trace, "forward", duration, apply_fault)
-        
-        if fault != "none" and (not fault_started or not fault_restored): raise RuntimeError("fault did not reach both onset and recovery")
-       
+                                  trace, "forward", fault_onset_s if fault != "none" else 3.0)
+        if fault != "none":
+            summary["fault"]["actual_onset_monotonic_ns"] = time.monotonic_ns()
+            trace.emit("fault_onset", name=fault, targets=fault_targets, seed=seed,
+                       requested_onset_s=fault_onset_s, requested_duration_s=fault_duration_s,
+                       before=managed.status())
+
+            if fault == "shared_5v_loss":
+                trace.emit("power_rail_state", rail="regulated_5v", powered=False,
+                           model="process availability only")
+
+            if fault == "esc_stuck_neutral": set_esc_stuck(1)
+            elif fault == "usb_loss": os.kill(managed.active["serial_link"].pid, signal.SIGUSR1)
+            elif fault == "pi_failure":
+                managed.stop("router", fast=True)
+                managed.stop("claw", fast=True)
+                os.kill(managed.active["serial_link"].pid, signal.SIGUSR1)
+            else:
+                for role in fault_targets:
+                    managed.stop(role, fast=True)
+
+            trace.emit("fault_applied", name=fault, after=managed.status())
+            summary["fault"]["applied_monotonic_ns"] = time.monotonic_ns()
+
+            samples.extend(observe_mavlink(link, ports["sysid"], forward_channel, command_pwm,
+                                           trace, "fault", fault_duration_s))
+            
+            summary["fault"]["recovery_command_monotonic_ns"] = time.monotonic_ns()
+            if fault == "esc_stuck_neutral": set_esc_stuck(0)
+            elif fault == "usb_loss": os.kill(managed.active["serial_link"].pid, signal.SIGUSR2)
+            elif fault == "pi_failure":
+                os.kill(managed.active["serial_link"].pid, signal.SIGUSR2)
+                start_claw()
+                start_router()
+            elif fault == "shared_5v_loss":
+                if profile == "pi_pixhawk":
+                    start_serial()
+                else:
+                    start_io()
+
+                start_sitl()
+                start_claw()
+                start_router()
+            else:
+                for role in fault_targets:
+                    {"router": start_router, "sitl": start_sitl,
+                     "navigator_io": start_io}[role]()
+            if fault == "shared_5v_loss":
+                trace.emit("power_rail_state", rail="regulated_5v", powered=True,
+                           model="process availability only")
+            
+            trace.emit("fault_recovery_command", name=fault, after=managed.status())
+
+            samples.extend(observe_mavlink(link, ports["sysid"], forward_channel, command_pwm,
+                                           trace, "recovery", 5.0, request_stream=True))
+
         observe_mavlink(link, ports["sysid"], forward_channel, 1500, trace, "release", 0.5)
         
         link.mav.command_long_send(ports["sysid"], 1, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,

@@ -1,5 +1,6 @@
 #include <gz/msgs/boolean.pb.h>
 #include <gz/msgs/int32.pb.h>
+#include <gz/msgs/int32_v.pb.h>
 #include <gz/plugin/Register.hh>
 #include <gz/sim/System.hh>
 #include <gz/transport/Node.hh>
@@ -77,6 +78,7 @@ public:
             node.Subscribe(prefix + "/pwm_us/source_valid", validity_callback);
             channels[index].command = node.Advertise<gz::msgs::Int32>(prefix);
             channels[index].validity = node.Advertise<gz::msgs::Boolean>(prefix + "/output_valid");
+            channels[index].sample = node.Advertise<gz::msgs::Int32_V>(prefix + "/esc_sample");
         }
     }
 
@@ -144,6 +146,12 @@ public:
             state.set_data(valid);
 
             channel.validity.Publish(state);
+
+            gz::msgs::Int32_V sample;
+            sample.add_data(channel.input_pwm);
+            sample.add_data(output.data());
+            sample.add_data(valid);
+            channel.sample.Publish(sample);
         }
     }
 
@@ -164,6 +172,7 @@ private:
         std::deque<std::pair<double, int>> queue;
         gz::transport::Node::Publisher command;
         gz::transport::Node::Publisher validity;
+        gz::transport::Node::Publisher sample;
     };
 
     gz::transport::Node node;
