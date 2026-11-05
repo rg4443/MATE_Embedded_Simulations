@@ -8,6 +8,7 @@ T200_RADIUS_M = 0.05
 T200_LENGTH_M = 0.113
 T200_MASS_KG = 0.427
 T200_PROPELLER_DIAMETER_M = 0.076
+HEAVE_ADDED_MASS_KG = 6.64814797
 
 FRAMES = {
     "bluerov1": {
@@ -206,7 +207,7 @@ def add_hydrodynamics(model, plugin_suffix):
         ("water_density", 1000),
         ("xDotU", 1.32246275),
         ("yDotV", 1.04396026),
-        ("zDotW", 6.64814797),
+        ("zDotW", HEAVE_ADDED_MASS_KG),
         ("kDotP", 0.03548512),
         ("mDotQ", 0.02818614),
         ("nDotR", 0.01814365),
@@ -225,8 +226,13 @@ def add_hydrodynamics(model, plugin_suffix):
     ):
         text(plugin, tag, value)
 
+def check_heave_mass(mass_kg):
+    if not math.isfinite(mass_kg) or mass_kg <= HEAVE_ADDED_MASS_KG:
+        raise ValueError(f"mass_kg must exceed the heave added mass of {HEAVE_ADDED_MASS_KG} kg")
+
 def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
                 body_m=None, mass_kg=12.0, channels=None):
+    check_heave_mass(mass_kg)
     directory.mkdir(parents=True, exist_ok=True)
 
     model_name = frame.replace("-", "_") + "_test"

@@ -20,7 +20,7 @@ from architectures.profiles import PROFILES
 from esc.config import CONNECTOR, PLUGIN, apply_esc
 from faults.specs import FAULTS, targets
 from launch import BLUEOS_IMAGE, arm, docker_gateway, observe_topic, read_parameter
-from validate_config import PACKAGE, REPO
+from validate_config import PACKAGE, REPO, validate_plant_mass
 
 
 def stop_owned(process, fast=False):
@@ -320,6 +320,8 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
     if manifest["status"] != "prepared_not_executed":
         raise ValueError("run directory is not a prepared step-2 world")
     
+    validate_plant_mass(resolved["plant"]["mass_kg"])
+
     profile = resolved["architecture"]
     fault_targets = targets(profile, fault)
 
@@ -465,7 +467,6 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
 
             for suffix, event in (("", f"gazebo_motor_{channel}"),
                                   ("/pwm_us", f"esc_raw_pwm_{channel}"),
-                                  ("/pwm_us/source_valid", f"esc_source_valid_{channel}"),
                                   ("/output_valid", f"esc_output_valid_{channel}")):
                 observe_topic(prefix + suffix, ["--json-output"], env, trace,
                               event, observers, observer_threads, session)

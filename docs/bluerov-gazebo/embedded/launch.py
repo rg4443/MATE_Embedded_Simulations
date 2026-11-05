@@ -16,7 +16,7 @@ from pymavlink import mavutil
 from adapters.ports import reserve_instance
 from adapters.trace import Trace
 from esc.config import CONNECTOR, PLUGIN, apply_esc
-from validate_config import PACKAGE, REPO
+from validate_config import PACKAGE, REPO, validate_plant_mass
 
 BLUEOS_IMAGE = "bluerobotics/blueos-core:1.4.6"
 
@@ -187,6 +187,8 @@ def launch(run_dir, esc_mode="legacy", command_pwm=1600, timeout_s=0.5, delay_s=
     if manifest["status"] != "prepared_not_executed":
         raise ValueError("run directory is not a prepared world")
     
+    validate_plant_mass(resolved["plant"]["mass_kg"])
+
     profile = resolved["architecture"]
     frame = resolved["plant"]["frame"]
     session_id = uuid.uuid4().hex[:12]
