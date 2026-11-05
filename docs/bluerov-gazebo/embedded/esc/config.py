@@ -2,8 +2,8 @@ import xml.etree.ElementTree as ET
 import math
 from pathlib import Path
 
-PLUGIN = Path(__file__).parent / "build" / "libMATE_VirtualESC.dylib"
-CONNECTOR = Path(__file__).parent / "build" / "libMATE_ArduPilotPlugin.dylib"
+PLUGIN = Path(__file__).parent / "build" / "libEmbedded_VirtualESC.dylib"
+CONNECTOR = Path(__file__).parent / "build" / "libEmbedded_ArduPilotPlugin.dylib"
 
 def pwm_to_motor(pwm_us):
     return math.floor(255 * (pwm_us - 1100) / 800 + 0.5)
@@ -40,7 +40,8 @@ def apply_esc(tree, model_name, motor_count, mode, timeout_s=0.5, delay_s=0.0,
         control.find("multiplier").text = "800"
         control.find("offset").text = "1.375"
         
-    esc = ET.SubElement(model, "plugin", {"filename": str(plugin.resolve()), "name": "mate::VirtualESC"})
+    esc = ET.SubElement(model, "plugin", {"filename": str(plugin.resolve()), "name": "Embedded::VirtualESC"})
+    
     settings = {
         "namespace": model_name,
         "motors": motor_count,

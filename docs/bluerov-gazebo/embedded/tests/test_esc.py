@@ -53,7 +53,7 @@ class ESCTests(unittest.TestCase):
             self.assertEqual(control.findtext("multiplier"), "800")
             self.assertEqual(control.findtext("offset"), "1.375")
 
-        esc = tree.getroot().find("model/plugin[@name='mate::VirtualESC']")
+        esc = tree.getroot().find("model/plugin[@name='Embedded::VirtualESC']")
         
         self.assertEqual(esc.findtext("min_pwm"), "1100")
         self.assertEqual(esc.findtext("max_pwm"), "1900")
@@ -65,7 +65,7 @@ class ESCTests(unittest.TestCase):
         apply_esc(tree, "bluerov2_test", 6, "prior_year", stuck_neutral_motor=2, plugin=Path(__file__),
                   connector_plugin=Path(__file__))
         
-        esc = tree.getroot().find("model/plugin[@name='mate::VirtualESC']")
+        esc = tree.getroot().find("model/plugin[@name='Embedded::VirtualESC']")
         
         self.assertEqual(esc.findtext("min_pwm"), "1160")
         self.assertEqual(esc.findtext("max_pwm"), "1840")

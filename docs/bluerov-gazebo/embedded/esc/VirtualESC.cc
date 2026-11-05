@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace Slugbotics {
+namespace Embedded {
 
 class VirtualESC final : public gz::sim::System,
                          public gz::sim::ISystemConfigure,
@@ -184,8 +184,8 @@ private:
 
 }
 
-GZ_ADD_PLUGIN(Slugbotics::VirtualESC, gz::sim::System,
-              Slugbotics::VirtualESC::ISystemConfigure,
-              Slugbotics::VirtualESC::ISystemPreUpdate)
+GZ_ADD_PLUGIN(Embedded::VirtualESC, gz::sim::System,
+              Embedded::VirtualESC::ISystemConfigure,
+              Embedded::VirtualESC::ISystemPreUpdate)
 
-GZ_ADD_PLUGIN_ALIAS(Slugbotics::VirtualESC, "Slugbotics::VirtualESC")
+GZ_ADD_PLUGIN_ALIAS(Embedded::VirtualESC, "Embedded::VirtualESC")
