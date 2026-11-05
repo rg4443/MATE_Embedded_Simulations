@@ -162,7 +162,11 @@ def observe_topic(topic, args, env, trace, event, processes, threads, session):
                         trace.emit(event, input_pwm_us=sample[0], motor_command=sample[1],
                                    output_valid=bool(sample[2]))
                         
-                elif event.startswith(("esc_output_valid_", "esc_source_valid_")):
+                elif event.startswith("esc_raw_pwm_"):
+                    pwm = int(record.get("data", 0))
+                    trace.emit(event, value=pwm)
+                    trace.emit(event.replace("esc_raw_pwm_", "esc_source_valid_", 1), value=pwm != 0)
+                elif event.startswith("esc_output_valid_"):
                     trace.emit(event, value=bool(record.get("data", False)))
                 else:
                     trace.emit(event, value=float(record.get("data", 0)))
@@ -304,8 +308,6 @@ def launch(run_dir, esc_mode="legacy", command_pwm=1600, timeout_s=0.5, delay_s=
             if esc_mode != "legacy":
                 observe_topic(prefix + "/pwm_us", ["--json-output"], env, trace,
                               f"esc_raw_pwm_{channel}", processes, threads, session)
-                observe_topic(prefix + "/pwm_us/source_valid", ["--json-output"], env, trace,
-                              f"esc_source_valid_{channel}", processes, threads, session)
                 observe_topic(prefix + "/output_valid", ["--json-output"], env, trace,
                               f"esc_output_valid_{channel}", processes, threads, session)
         observe_topic(f"/{model_name}/motor_1/force", ["--json-output"], env, trace,

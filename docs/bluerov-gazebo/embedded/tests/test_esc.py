@@ -50,8 +50,8 @@ class ESCTests(unittest.TestCase):
         
         for index, control in enumerate(connector.findall("control"), 1):
             self.assertEqual(control.findtext("cmd_topic"), f"/bluerov2_test/motor_{index}/pwm_us")
-            self.assertEqual(control.findtext("multiplier"), "800")
-            self.assertEqual(control.findtext("offset"), "1.375")
+            self.assertEqual(control.findtext("multiplier"), "255")
+            self.assertEqual(control.findtext("offset"), "0")
 
         esc = tree.getroot().find("model/plugin[@name='Embedded::VirtualESC']")
         

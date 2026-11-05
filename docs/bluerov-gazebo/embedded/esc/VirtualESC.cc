@@ -62,20 +62,20 @@ public:
             const std::string prefix = "/" + model + "/motor_" + std::to_string(index + 1);
             const std::function<void(const gz::msgs::Int32 &)> callback = [this, index](const gz::msgs::Int32 &message) {
                 std::lock_guard<std::mutex> guard(mutex);
-                channels[index].pending_pwm = message.data();
-                channels[index].pending = true;
+                Channel &channel = channels[index];
+                const int pwm = message.data();
+
+                if (pwm < 1100 || pwm > 1900) {
+                    channel.invalidate(pwm);
+                    channel.pending = false;
+                    return;
+                }
+                
+                channel.pending_pwm = pwm;
+                channel.pending = true;
             };
 
             node.Subscribe(prefix + "/pwm_us", callback);
-
-            const std::function<void(const gz::msgs::Boolean &)> validity_callback =
-                [this, index](const gz::msgs::Boolean &message) {
-                    std::lock_guard<std::mutex> guard(mutex);
-                    channels[index].pending_source_valid = message.data();
-                    channels[index].has_pending_source_valid = true;
-                };
-
-            node.Subscribe(prefix + "/pwm_us/source_valid", validity_callback);
             channels[index].command = node.Advertise<gz::msgs::Int32>(prefix);
             channels[index].validity = node.Advertise<gz::msgs::Boolean>(prefix + "/output_valid");
             channels[index].sample = node.Advertise<gz::msgs::Int32_V>(prefix + "/esc_sample");
@@ -93,11 +93,8 @@ public:
         for (size_t index = 0; index < channels.size(); index++) {
             Channel &channel = channels[index];
 
-            if (channel.has_pending_source_valid) {
-                channel.source_valid = channel.pending_source_valid;
-                channel.last_source_valid_s = now;
-                channel.has_source_valid = true;
-                channel.has_pending_source_valid = false;
+            if (channel.has_source && (now < channel.last_source_s || now - channel.last_source_s >= timeout_s)) {
+                channel.invalidate(0);
             }
 
             if (channel.pending) {
@@ -108,6 +105,8 @@ public:
 
                 if (drop_input_after_s < 0 || now - channel.first_input_s < drop_input_after_s) {
                     channel.queue.push_back({now + delay_s, channel.pending_pwm});
+                    channel.last_source_s = now;
+                    channel.has_source = true;
                 }
 
                 channel.pending = false;
@@ -115,15 +114,11 @@ public:
 
             while (!channel.queue.empty() && channel.queue.front().first <= now) {
                 channel.input_pwm = channel.queue.front().second;
-                channel.last_input_s = now;
                 channel.has_input = true;
                 channel.queue.pop_front();
             }
-            
-            const bool valid = channel.has_source_valid && channel.source_valid &&
-                               now - channel.last_source_valid_s <= timeout_s && channel.has_input &&
-                               channel.input_pwm >= 1100 && channel.input_pwm <= 1900 &&
-                               now - channel.last_input_s <= timeout_s;
+
+            const bool valid = channel.has_input;
 
             int pwm = 1500;
             
@@ -158,14 +153,10 @@ public:
 private:
     struct Channel {
         bool pending{false};
-        bool has_pending_source_valid{false};
-        bool pending_source_valid{false};
-        bool has_source_valid{false};
-        bool source_valid{false};
-        double last_source_valid_s{0};
+        bool has_source{false};
+        double last_source_s{0};
         int pending_pwm{0};
         int input_pwm{0};
-        double last_input_s{0};
         bool has_input{false};
         bool has_first_input{false};
         double first_input_s{0};
@@ -173,6 +164,14 @@ private:
         gz::transport::Node::Publisher command;
         gz::transport::Node::Publisher validity;
         gz::transport::Node::Publisher sample;
+
+        void invalidate(int pwm)
+        {
+            queue.clear();
+            input_pwm = pwm;
+            has_input = false;
+            has_source = false;
+        }
     };
 
     gz::transport::Node node;

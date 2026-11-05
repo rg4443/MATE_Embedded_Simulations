@@ -37,8 +37,6 @@ def apply_esc(tree, model_name, motor_count, mode, timeout_s=0.5, delay_s=0.0,
         if control.findtext("cmd_topic") != f"/{model_name}/motor_{index}": raise ValueError("connector motor topic mismatch")
         
         control.find("cmd_topic").text += "/pwm_us"
-        control.find("multiplier").text = "800"
-        control.find("offset").text = "1.375"
         
     esc = ET.SubElement(model, "plugin", {"filename": str(plugin.resolve()), "name": "Embedded::VirtualESC"})
     

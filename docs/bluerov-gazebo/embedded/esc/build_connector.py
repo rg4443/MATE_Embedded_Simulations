@@ -11,30 +11,44 @@ def replace_once(source, before, after):
 
 def prepare():
     source = SOURCE.read_text()
-    source = replace_once(source, "#include <gz/msgs/int32.pb.h>",
-                          "#include <gz/msgs/int32.pb.h>\n#include <gz/msgs/boolean.pb.h>")
-    
-    source = replace_once(source,
-                          "  public: gz::transport::Node::Publisher pub;",
-                          "  public: gz::transport::Node::Publisher pub;\n"
-                          "  public: gz::transport::Node::Publisher validPub;")
-    
-    source = replace_once(source,
-                          "          node.Advertise<msgs::Int32>(control.cmdTopic);",
-                          "          node.Advertise<msgs::Int32>(control.cmdTopic);\n"
-                          "      control.validPub = this->dataPtr->node.Advertise<msgs::Boolean>(\n"
-                          "          control.cmdTopic + \"/source_valid\");")
-    
-    source = replace_once(source,
-                          "  {\n    // skip servo output while not ready\n"
-                          "    if (!this->dataPtr->controls[i].outputReady)",
-                          "  {\n    if (this->dataPtr->controls[i].type == \"COMMAND\")\n"
-                          "    {\n      msgs::Boolean valid;\n"
-                          "      valid.set_data(this->dataPtr->controls[i].outputReady);\n"
-                          "      this->dataPtr->controls[i].validPub.Publish(valid);\n    }\n"
-                          "    // skip servo output while not ready\n"
-                          "    if (!this->dataPtr->controls[i].outputReady)")
-    
+    source = replace_once(
+        source,
+        '    if (this->dataPtr->controls[i].type == "COMMAND")\n'
+        '    {\n'
+        '      msgs::Int32 cmd;\n'
+        '      cmd.set_data(static_cast<int32_t>(std::lround(this->dataPtr->controls[i].cmd)));\n'
+        '      this->dataPtr->controls[i].pub.Publish(cmd);\n'
+        '      continue;\n'
+        '    }',
+        '    if (this->dataPtr->controls[i].type == "COMMAND")\n'
+        '    {\n'
+        '      continue;  // Published once per received servo packet.\n'
+        '    }',
+    )
+    source = replace_once(
+        source,
+        '                const double pwm = _pwm[this->dataPtr->controls[i].channel];',
+        '                const double pwm = _pwm[this->dataPtr->controls[i].channel];\n'
+        '                if (this->dataPtr->controls[i].type == "COMMAND")\n'
+        '                {\n'
+        '                  msgs::Int32 cmd;\n'
+        '                  cmd.set_data(static_cast<int32_t>(pwm));\n'
+        '                  this->dataPtr->controls[i].pub.Publish(cmd);\n'
+        '                  continue;\n'
+        '                }',
+    )
+    source = replace_once(
+        source,
+        '    // this->dataPtr->controls[i].pid.Reset();',
+        '    if (this->dataPtr->controls[i].type == "COMMAND")\n'
+        '    {\n'
+        '      msgs::Int32 cmd;\n'
+        '      cmd.set_data(0);\n'
+        '      this->dataPtr->controls[i].pub.Publish(cmd);\n'
+        '    }\n'
+        '    // this->dataPtr->controls[i].pid.Reset();',
+    )
+
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(source)
 
