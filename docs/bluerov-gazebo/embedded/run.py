@@ -112,3 +112,7 @@ def main():
         parser.error(str(exc))
     
     print(output)
+
+
+if __name__ == "__main__":
+    main()

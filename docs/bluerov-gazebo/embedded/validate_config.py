@@ -26,16 +26,6 @@ def number(value, context, positive=False):
     
     return float(value)
 
-def validate_plant_mass(value):
-    mass_kg = number(value, "mass_kg", positive=True)
-
-    try:
-        generate.check_heave_mass(mass_kg)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
-    
-    return mass_kg
-
 def vector(value, context, positive=False):
     if not isinstance(value, list) or len(value) != 3:
         raise ConfigError(f"{context} must contain three numbers")
@@ -75,7 +65,7 @@ def validate(config):
     if expected != [tuple(float(value) for value in row) for row in factors]: raise ConfigError(f"{frame} motor factors differ from checked-out ArduSub source")
 
     body_m = vector(plant["body_m"], "body_m", positive=True)
-    mass_kg = validate_plant_mass(plant["mass_kg"])
+    mass_kg = number(plant["mass_kg"], "mass_kg", positive=True)
     volume = number(plant["displaced_volume_m3"], "displaced_volume_m3", positive=True)
     cob_z = number(plant["center_of_buoyancy_z_m"], "center_of_buoyancy_z_m")
     

@@ -8,7 +8,14 @@ T200_RADIUS_M = 0.05
 T200_LENGTH_M = 0.113
 T200_MASS_KG = 0.427
 T200_PROPELLER_DIAMETER_M = 0.076
-HEAVE_ADDED_MASS_KG = 6.64814797
+ADDED_MASS = (
+    ("xDotU", "xx", 1.32246275),
+    ("yDotV", "yy", 1.04396026),
+    ("zDotW", "zz", 6.64814797),
+    ("kDotP", "pp", 0.03548512),
+    ("mDotQ", "qq", 0.02818614),
+    ("nDotR", "rr", 0.01814365),
+)
 
 FRAMES = {
     "bluerov1": {
@@ -205,12 +212,6 @@ def add_hydrodynamics(model, plugin_suffix):
     for tag, value in (
         ("link_name", "rov_body"),
         ("water_density", 1000),
-        ("xDotU", 1.32246275),
-        ("yDotV", 1.04396026),
-        ("zDotW", HEAVE_ADDED_MASS_KG),
-        ("kDotP", 0.03548512),
-        ("mDotQ", 0.02818614),
-        ("nDotR", 0.01814365),
         ("xUabsU", -40),
         ("xU", -30),
         ("yVabsV", -40),
@@ -226,15 +227,38 @@ def add_hydrodynamics(model, plugin_suffix):
     ):
         text(plugin, tag, value)
 
-def check_heave_mass(mass_kg):
-    if not math.isfinite(mass_kg) or mass_kg <= HEAVE_ADDED_MASS_KG:
-        raise ValueError(f"mass_kg must exceed the heave added mass of {HEAVE_ADDED_MASS_KG} kg")
+def use_native_added_mass(root):
+    plugin = root.find("model/plugin[@name='gz::sim::systems::EER_Hydrodynamics']")
+
+    if plugin is None: raise ValueError("model is missing its hydrodynamics plugin")
+
+    link_name = plugin.findtext("link_name")
+    inertial = root.find(f"model/link[@name='{link_name}']/inertial")
+
+    if inertial is None: raise ValueError("hydrodynamics link is missing its inertial properties")
+
+    added_mass = inertial.find("fluid_added_mass")
+
+    if added_mass is None:
+        added_mass = ET.SubElement(inertial, "fluid_added_mass")
+
+        for legacy_tag, matrix_tag, default in ADDED_MASS:
+            text(added_mass, matrix_tag, plugin.findtext(legacy_tag, str(default)))
+
+    for child in list(plugin):
+        if "Dot" in child.tag: plugin.remove(child)
+
+    for name in ("disable_added_mass", "disable_coriolis"):
+        setting = plugin.find(name)
+
+        if setting is None: setting = ET.SubElement(plugin, name)
+
+        setting.text = "true"
+
+    root.set("version", "1.11")
 
 def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
                 body_m=None, mass_kg=12.0, channels=None):
-    check_heave_mass(mass_kg)
-    directory.mkdir(parents=True, exist_ok=True)
-
     model_name = frame.replace("-", "_") + "_test"
     root = ET.Element("sdf", {"version": "1.7"})
     model = ET.SubElement(root, "model", {"name": model_name})
@@ -246,7 +270,7 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
 
     body_mass = mass_kg - T200_MASS_KG * len(spec["factors"])
 
-    if body_mass <= 0: raise ValueError("total mass must exceed the combined T200 thruster mass")
+    if not math.isfinite(body_mass) or body_mass <= 0: raise ValueError("total mass must exceed the combined T200 thruster mass")
     
     length, width, height = body_m
     if legacy_body:
@@ -272,6 +296,9 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
         add_thruster(model, model_name, number, position, factors, plugin_suffix)
 
     add_hydrodynamics(model, plugin_suffix)
+    use_native_added_mass(root)
+
+    directory.mkdir(parents=True, exist_ok=True)
     add_connector(model, model_name, len(spec["factors"]), connector_lib, channels)
 
     ET.indent(root, space="  ")
@@ -282,7 +309,7 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
     text(config, "name", model_name)
     text(config, "version", "1.0")
 
-    sdf = text(config, "sdf", "model.sdf", version="1.7")
+    sdf = text(config, "sdf", "model.sdf", version="1.11")
     sdf.tail = "\n"
 
     ET.ElementTree(config).write(directory / "model.config", encoding="utf-8", xml_declaration=True)
@@ -291,7 +318,7 @@ def write_model(directory, frame, spec, connector_lib, plugin_suffix, *,
 
 def write_world(path, model_name, plugin_suffix, *, displaced_volume_m3=0.012,
                 center_of_buoyancy_z_m=0.02):
-    root = ET.Element("sdf", {"version": "1.10"})
+    root = ET.Element("sdf", {"version": "1.11"})
     world = ET.SubElement(root, "world", {"name": model_name + "_world"})
     physics = ET.SubElement(world, "physics", {"name": "3ms", "type": "ignored"})
 
