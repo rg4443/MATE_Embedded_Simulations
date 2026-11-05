@@ -291,9 +291,24 @@ def verify_fault_effect(session, summary):
         driven_pwm = {row["input_pwm_us"] for row in initial if row["event"] == "esc_sample_1"
                       and row["motor_command"] != 128 and row["output_valid"]}
         
-        effects["esc_neutral_with_valid_source"] = any(
-            row["event"] == "esc_sample_1" and row["motor_command"] == 128
-            and row["input_pwm_us"] in driven_pwm and row["output_valid"] for row in during)
+        settled_at = applied_at + 200_000_000
+        max_sample_gap_ns = 100_000_000
+
+        samples = [row for row in during if row["event"] == "esc_sample_1"
+                   and row["host_monotonic_ns"] >= settled_at]
+        
+        sample_times = sorted({row["host_monotonic_ns"] for row in samples})
+        coverage_times = [settled_at, *sample_times, recovery]
+        coverage = (
+            recovery - settled_at >= 300_000_000
+            and len(sample_times) >= 3
+            and all(end - start <= max_sample_gap_ns for start, end in zip(coverage_times, coverage_times[1:]))
+        )
+        
+        effects["esc_fault_sample_coverage"] = coverage
+        effects["esc_neutral_with_valid_source"] = coverage and all(
+            row["motor_command"] == 128 and row["input_pwm_us"] in driven_pwm
+            and row["output_valid"] for row in samples)
         
         effects["esc_motor_response_restored"] = motor_running(after)
 

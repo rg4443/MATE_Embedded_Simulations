@@ -75,25 +75,49 @@ class Step5Contracts(unittest.TestCase):
         self.assertEqual(summary["status"], "failed")
         self.assertFalse(summary["fault"]["effect_checks"]["telemetry_interrupted"])
 
-    def test_esc_fault_requires_coherent_neutral_output_and_recovery(self):
+    def test_esc_fault_requires_sustained_neutral_output_and_recovery(self):
         records = [*self.baseline(), self.event(1200, "fault_applied", after={}),
                    self.event(3200, "fault_recovery_command", after={}), *self.telemetry(3300)]
         
-        mismatched = [self.motor(1500, 1500, 128, True), self.motor(1600, 1400, 128, False),
-                      self.motor(1700, 1400, 96, True)]
-        
+        samples = [self.motor(ms, 1400, 128, True) for ms in range(1400, 3000, 50)]
         recovered = self.motor(3400, 1400, 96, True)
-        summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",), records + mismatched + [recovered])
 
-        self.assertEqual(summary["status"], "failed")
-        self.assertFalse(summary["fault"]["effect_checks"]["esc_neutral_with_valid_source"])
+        for name, incomplete in (
+            ("single sample", samples[:1]),
+            ("missing start", samples[3:]),
+            ("missing middle", samples[:8] + samples[12:]),
+            ("missing end", samples[:-3]),
+        ):
+            with self.subTest(name=name):
+                summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",),
+                                           records + incomplete + [recovered])
+                
+                self.assertEqual(summary["status"], "failed")
+                self.assertFalse(summary["fault"]["effect_checks"]["esc_fault_sample_coverage"])
 
-        stuck = self.motor(1800, 1400, 128, True)
-        summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",), records + [stuck])
+        for name, sample in (
+            ("thrust resumed", self.motor(2000, 1400, 96, True)),
+            ("input went neutral", self.motor(2000, 1500, 128, True)),
+            ("signal became invalid", self.motor(2000, 1400, 128, False)),
+        ):
+            with self.subTest(name=name):
+                changed = [sample if row["host_monotonic_ns"] == sample["host_monotonic_ns"] else row
+                           for row in samples]
+                
+                summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",),
+                                           records + changed + [recovered])
+                
+                self.assertEqual(summary["status"], "failed")
+                self.assertTrue(summary["fault"]["effect_checks"]["esc_fault_sample_coverage"])
+                self.assertFalse(summary["fault"]["effect_checks"]["esc_neutral_with_valid_source"])
+
+        summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",), records + samples)
         self.assertEqual(summary["status"], "failed")
         self.assertFalse(summary["fault"]["effect_checks"]["esc_motor_response_restored"])
 
-        summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",), records + [stuck, recovered])
+        settling = self.motor(1300, 1400, 96, True)
+        summary = self.check_trace("esc_stuck_neutral", ("esc_motor_1",),
+                                   records + [settling, *samples, recovered])
         self.assertEqual(summary["status"], "passed")
 
 if __name__ == "__main__":
