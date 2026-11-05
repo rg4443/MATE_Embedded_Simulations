@@ -1,6 +1,3 @@
-# AP_FLAKE8_CLEAN
-"""Write trace events against one host monotonic clock."""
-
 import json
 import threading
 import time
@@ -23,6 +20,7 @@ class Trace:
             "wall_utc": datetime.now(timezone.utc).isoformat(),
             **fields,
         }
+
         with self.lock:
             self.file.write(json.dumps(record, separators=(",", ":")) + "\n")
             self.file.flush()

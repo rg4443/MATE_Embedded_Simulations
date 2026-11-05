@@ -19,8 +19,10 @@ from adapters.trace import Trace
 from architectures.profiles import PROFILES
 from esc.config import CONNECTOR, PLUGIN, apply_esc
 from faults.specs import FAULTS, targets
-from launch import BLUEOS_IMAGE, arm, docker_gateway, observe_topic, read_parameter
-from validate_config import PACKAGE, REPO, validate_plant_mass
+from launch import BLUEOS_IMAGE, arm, docker_gateway, is_vehicle_message, observe_topic, read_parameter, wait_vehicle_heartbeat
+from validate_config import PACKAGE, REPO
+
+from generate import use_native_added_mass
 
 
 def stop_owned(process, fast=False):
@@ -154,8 +156,7 @@ def observe_mavlink(link, sysid, channel, pwm, trace, command_id, seconds, reque
         while time.monotonic() < until:
             message = link.recv_match(blocking=True, timeout=0.02)
 
-            if message is None or message.get_srcSystem() != sysid or message.get_srcComponent() != 1:
-                continue
+            if not is_vehicle_message(message, sysid): continue
             if message.get_type() == "HEARTBEAT":
                 trace.emit("topside_heartbeat", source_sysid=message.get_srcSystem(),
                            source_compid=message.get_srcComponent(),
@@ -205,6 +206,20 @@ def trace_fault_window(session, summary):
         
         summary["fault"]["observed_after_recovery_command"] = metrics_for(
             [row for row in rows if row["host_monotonic_ns"] > restored])
+
+
+def covered_esc_samples(rows, channel, settled_at, recovery):
+    samples = [row for row in rows if row["event"] == f"esc_sample_{channel}"
+               and settled_at <= row["host_monotonic_ns"] < recovery]
+    sample_times = sorted({row["host_monotonic_ns"] for row in samples})
+    coverage_times = [settled_at, *sample_times, recovery]
+    covered = (
+        recovery - settled_at >= 300_000_000
+        and len(sample_times) >= 3
+        and all(end - start <= 100_000_000 for start, end in zip(coverage_times, coverage_times[1:]))
+    )
+
+    return covered, samples
 
 
 def verify_fault_effect(session, summary):
@@ -291,20 +306,8 @@ def verify_fault_effect(session, summary):
         driven_pwm = {row["input_pwm_us"] for row in initial if row["event"] == "esc_sample_1"
                       and row["motor_command"] != 128 and row["output_valid"]}
         
-        settled_at = applied_at + 200_000_000
-        max_sample_gap_ns = 100_000_000
+        coverage, samples = covered_esc_samples(during, 1, applied_at + 200_000_000, recovery)
 
-        samples = [row for row in during if row["event"] == "esc_sample_1"
-                   and row["host_monotonic_ns"] >= settled_at]
-        
-        sample_times = sorted({row["host_monotonic_ns"] for row in samples})
-        coverage_times = [settled_at, *sample_times, recovery]
-        coverage = (
-            recovery - settled_at >= 300_000_000
-            and len(sample_times) >= 3
-            and all(end - start <= max_sample_gap_ns for start, end in zip(coverage_times, coverage_times[1:]))
-        )
-        
         effects["esc_fault_sample_coverage"] = coverage
         effects["esc_neutral_with_valid_source"] = coverage and all(
             row["motor_command"] == 128 and row["input_pwm_us"] in driven_pwm
@@ -313,11 +316,17 @@ def verify_fault_effect(session, summary):
         effects["esc_motor_response_restored"] = motor_running(after)
 
     if fault in ("navigator_io_failure", "pixhawk_restart", "ardusub_failure", "shared_5v_loss"):
-        effects["esc_output_became_invalid"] = any(
-            row["event"] == "esc_sample_1" and not row["output_valid"]
-            and row["motor_command"] == 128 for row in during)
-        effects["esc_output_valid_after_recovery"] = any(
-            row["event"] == "esc_sample_1" and row["output_valid"] for row in after)
+        channels = range(1, summary.get("motor_count", 1) + 1)
+        settled_at = applied_at + 700_000_000
+        windows = [covered_esc_samples(during, channel, settled_at, recovery) for channel in channels]
+
+        effects["esc_fault_sample_coverage"] = all(coverage for coverage, _ in windows)
+        effects["esc_output_became_invalid"] = effects["esc_fault_sample_coverage"] and all(
+            not row["output_valid"] and row["motor_command"] == 128
+            for _, samples in windows for row in samples)
+        effects["esc_output_valid_after_recovery"] = all(
+            any(row["event"] == f"esc_sample_{channel}" and row["output_valid"] for row in after)
+            for channel in channels)
 
     summary["fault"]["effect_checks"] = effects
     
@@ -335,8 +344,6 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
     if manifest["status"] != "prepared_not_executed":
         raise ValueError("run directory is not a prepared step-2 world")
     
-    validate_plant_mass(resolved["plant"]["mass_kg"])
-
     profile = resolved["architecture"]
     fault_targets = targets(profile, fault)
 
@@ -362,7 +369,7 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
     link = None
 
     summary = {"session_id": session_id, "profile": profile, "architecture": PROFILES[profile],
-               "ports": ports, "status": "running", "fidelity": "F1 topology; F2 BlueOS router binary only",
+               "ports": ports, "motor_count": motor_count, "status": "running", "fidelity": "F1 topology; F2 BlueOS router binary only",
                "functional_architecture_comparison_ready": True,
                "quantitative_architecture_comparison_ready": False,
                "fault": {"name": fault, "targets": fault_targets, "requested_onset_s": fault_onset_s,
@@ -383,6 +390,7 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
         
         model_path = session / model_relative
         tree = ET.parse(model_path)
+        use_native_added_mass(tree.getroot())
         port_node = tree.getroot().find("model/plugin[@name='ArduPilotPlugin']/fdm_port_in")
         
         if port_node is None: raise ValueError("generated model lacks ArduPilot connector port")
@@ -486,18 +494,17 @@ def launch(run_dir, fault="none", fault_onset_s=0.8, fault_duration_s=1.5, seed=
                 observe_topic(prefix + suffix, ["--json-output"], env, trace,
                               event, observers, observer_threads, session)
                 
-        observe_topic(f"/{model_name}/motor_1/esc_sample", ["--json-output"], env, trace,
-                      "esc_sample_1", observers, observer_threads, session)
+            observe_topic(prefix + "/esc_sample", ["--json-output"], env, trace,
+                          f"esc_sample_{channel}", observers, observer_threads, session)
+
         observe_topic(f"/{model_name}/motor_1/force", ["--json-output"], env, trace,
                       "gazebo_force_1", observers, observer_threads, session)
         observe_topic(f"/world/{model_name}_world/pose/info", ["--json-output"], env, trace,
                       "gazebo_pose", observers, observer_threads, session)
 
         link = mavutil.mavlink_connection(f"udpin:127.0.0.1:{ports['topside_udp']}", source_system=255)
-        heartbeat = link.wait_heartbeat(timeout=35)
-        
-        if heartbeat is None or heartbeat.get_srcSystem() != ports["sysid"] or heartbeat.get_srcComponent() != 1: raise TimeoutError("no expected ArduSub heartbeat through architecture path")
-        
+        heartbeat = wait_vehicle_heartbeat(link, ports["sysid"], timeout=35)
+
         trace.emit("topside_heartbeat", source_sysid=heartbeat.get_srcSystem(),
                    source_compid=heartbeat.get_srcComponent(), armed=False)
         

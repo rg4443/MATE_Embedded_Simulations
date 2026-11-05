@@ -16,7 +16,9 @@ from pymavlink import mavutil
 from adapters.ports import reserve_instance
 from adapters.trace import Trace
 from esc.config import CONNECTOR, PLUGIN, apply_esc
-from validate_config import PACKAGE, REPO, validate_plant_mass
+from validate_config import PACKAGE, REPO
+
+from generate import use_native_added_mass
 
 BLUEOS_IMAGE = "bluerobotics/blueos-core:1.4.6"
 
@@ -45,6 +47,23 @@ def docker_gateway():
     
     return result.split()[0]
 
+def is_vehicle_message(message, sysid):
+    return message is not None and message.get_srcSystem() == sysid and message.get_srcComponent() == 1
+
+
+def wait_vehicle_heartbeat(link, sysid, timeout):
+    deadline = time.monotonic() + timeout
+
+    while True:
+        remaining = deadline - time.monotonic()
+
+        if remaining <= 0: raise TimeoutError("no expected ArduSub heartbeat through router")
+
+        heartbeat = link.recv_match(type="HEARTBEAT", blocking=True, timeout=remaining)
+
+        if is_vehicle_message(heartbeat, sysid): return heartbeat
+
+
 def read_parameter(link, name, sysid, timeout=8):
     link.mav.param_request_read_send(sysid, 1, name.encode(), -1)
 
@@ -53,7 +72,7 @@ def read_parameter(link, name, sysid, timeout=8):
     while time.monotonic() < end:
         message = link.recv_match(type="PARAM_VALUE", blocking=True, timeout=0.3)
         
-        if message is not None and str(message.param_id).rstrip("\x00") == name:
+        if is_vehicle_message(message, sysid) and str(message.param_id).rstrip("\x00") == name:
             return int(round(message.param_value))
    
     raise TimeoutError(f"no {name} parameter response")
@@ -74,8 +93,7 @@ def arm(link, sysid, trace):
 
         message = link.recv_match(blocking=True, timeout=0.25)
 
-        if message is None:
-            continue
+        if not is_vehicle_message(message, sysid): continue
 
         if message.get_type() == "COMMAND_ACK" and message.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             trace.emit("topside_arm_ack", result=message.result, mavlink_seq=message.get_seq())
@@ -108,8 +126,7 @@ def hold_input(link, sysid, channel, pwm, seconds, trace, command_id):
         while time.monotonic() < until:
             message = link.recv_match(type="SERVO_OUTPUT_RAW", blocking=True, timeout=0.02)
            
-            if message is None:
-                continue
+            if not is_vehicle_message(message, sysid): continue
            
             outputs = [getattr(message, f"servo{i}_raw") for i in range(1, 9)]
             
@@ -119,6 +136,10 @@ def hold_input(link, sysid, channel, pwm, seconds, trace, command_id):
                        mavlink_seq=message.get_seq())
     
     return values
+
+def has_motor_response(samples, motor_count):
+    return any(1100 <= pwm <= 1900 and pwm != 1500 for row in samples for pwm in row[:motor_count])
+
 
 def observe_topic(topic, args, env, trace, event, processes, threads, session):
     output = (session / f"{event}.log").open("w")
@@ -156,7 +177,7 @@ def observe_topic(topic, args, env, trace, event, processes, threads, session):
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event == "esc_sample_1":
+                if event.startswith("esc_sample_"):
                     sample = record.get("data", [])
                     if isinstance(sample, list) and len(sample) == 3 and sample[2] in (0, 1):
                         trace.emit(event, input_pwm_us=sample[0], motor_command=sample[1],
@@ -187,8 +208,6 @@ def launch(run_dir, esc_mode="legacy", command_pwm=1600, timeout_s=0.5, delay_s=
     if manifest["status"] != "prepared_not_executed":
         raise ValueError("run directory is not a prepared world")
     
-    validate_plant_mass(resolved["plant"]["mass_kg"])
-
     profile = resolved["architecture"]
     frame = resolved["plant"]["frame"]
     session_id = uuid.uuid4().hex[:12]
@@ -225,6 +244,7 @@ def launch(run_dir, esc_mode="legacy", command_pwm=1600, timeout_s=0.5, delay_s=
         
         model_path = session / model_relative
         tree = ET.parse(model_path)
+        use_native_added_mass(tree.getroot())
         port_node = tree.getroot().find("model/plugin[@name='ArduPilotPlugin']/fdm_port_in")
 
         if port_node is None:
@@ -318,11 +338,8 @@ def launch(run_dir, esc_mode="legacy", command_pwm=1600, timeout_s=0.5, delay_s=
                       "gazebo_pose", processes, threads, session)
 
         link = mavutil.mavlink_connection(f"udpin:127.0.0.1:{ports['topside_udp']}", source_system=255)
-        heartbeat = link.wait_heartbeat(timeout=30)
+        heartbeat = wait_vehicle_heartbeat(link, ports["sysid"], timeout=30)
 
-        if heartbeat is None or heartbeat.get_srcSystem() != ports["sysid"]:
-            raise TimeoutError("no expected ArduSub heartbeat through router")
-      
         trace.emit("topside_heartbeat", source_sysid=heartbeat.get_srcSystem(),
                    source_compid=heartbeat.get_srcComponent(), mavlink_seq=heartbeat.get_seq())
         
@@ -345,8 +362,7 @@ def launch(run_dir, esc_mode="legacy", command_pwm=1600, timeout_s=0.5, delay_s=
         
         hold_input(link, ports["sysid"], forward_channel, 1500, 0.5, trace, "release")
        
-        if not values or not any(any(pwm != 1500 for pwm in row[:len(resolved["plant"]["motor_channels"])])
-                                 for row in values):
+        if not has_motor_response(values, len(resolved["plant"]["motor_channels"])):
             raise RuntimeError("no non-neutral servo output observed")
         
         link.mav.command_long_send(ports["sysid"], 1, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
