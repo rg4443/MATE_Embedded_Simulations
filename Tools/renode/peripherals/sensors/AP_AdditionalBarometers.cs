@@ -455,8 +455,13 @@ namespace Antmicro.Renode.Peripherals.Sensors
     // latest absolute pressure and temperature in a five-byte frame.
     public class AP_Baro_KellerLD : II2CPeripheral
     {
-        public AP_Baro_KellerLD(IMachine machine)
+        public AP_Baro_KellerLD(IMachine machine) : this(machine, false)
         {
+        }
+
+        protected AP_Baro_KellerLD(IMachine machine, bool submerged)
+        {
+            this.submerged = submerged;
             physics = AP_PhysicsState.ForMachine(machine);
             Reset();
         }
@@ -517,14 +522,18 @@ namespace Antmicro.Renode.Peripherals.Sensors
             result[0] = SuppressData ? StatusChecksumError : StatusNormal;
 
             pressureSampleNumber++;
-            var pressurePa = AP_SensorNoise.Pressure(
-                physics.Current, pressureSampleNumber, 0x4B4CU, 0.5f);
+            var truth = physics.Current;
+            var pressurePa = submerged
+                ? (float)(SurfacePressurePa + WaterDensity * Gravity * Math.Max(0.0, truth.PositionNedM[2]))
+                : truth.PressurePa;
+            pressurePa = AP_SensorNoise.Pressure(
+                pressurePa, pressureSampleNumber, 0x4B4CU, submerged ? 4.0f : 0.5f);
             var pressureRaw = (int)Math.Round(
                 16384.0 + pressurePa / PascalPerBar *
                 32768.0 / (PressureMaximumBar - PressureMinimumBar));
             pressureRaw = Math.Max(1, Math.Min(0xFFFF, pressureRaw));
 
-            var temperatureC = physics.Current.TemperatureK - 273.15;
+            var temperatureC = truth.TemperatureK - 273.15;
             var temperatureRaw = (int)Math.Round(
                 ((temperatureC + 50.0) / 0.05 + 24.0) * 16.0);
             temperatureRaw = Math.Max(1, Math.Min(0xFFFF, temperatureRaw));
@@ -568,6 +577,7 @@ namespace Antmicro.Renode.Peripherals.Sensors
         }
 
         private readonly AP_PhysicsState physics;
+        private readonly bool submerged;
         private byte command;
         private uint pressureSampleNumber;
 
@@ -585,6 +595,16 @@ namespace Antmicro.Renode.Peripherals.Sensors
         private const double PressureMinimumBar = 0.0;
         private const double PressureMaximumBar = 2.0;
         private const double PascalPerBar = 100000.0;
+        private const double SurfacePressurePa = 101325.0;
+        private const double WaterDensity = 1000.0;
+        private const double Gravity = 9.80665;
+    }
+
+    public class AP_Baro_KellerLD_Depth : AP_Baro_KellerLD
+    {
+        public AP_Baro_KellerLD_Depth(IMachine machine) : base(machine, true)
+        {
+        }
     }
 
     // ICP-101xx command protocol. The synthetic OTP constants come from the

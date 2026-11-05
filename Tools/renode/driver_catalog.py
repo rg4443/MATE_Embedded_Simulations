@@ -1194,6 +1194,21 @@ ATTACHABLE_DEVICES = {
             ('BARO_EXT_BUS', '{i2c_index}'),
         ),
     },
+    'keller-depth': {
+        'name': 'Keller 4LD-9LD hydrostatic depth sensor',
+        'category': 'Barometer',
+        'bus': 'i2c',
+        'model': 'Sensors.AP_Baro_KellerLD_Depth',
+        'address': 0x40,
+        'driver': 'AP_Baro/AP_Baro_KellerLD.cpp',
+        'feature': 'AP_BARO_KELLERLD_ENABLED',
+        'coverage': COVERAGE_DYNAMIC,
+        'hotplug': 'parameter-reinit',
+        'parameters': (
+            ('BARO_PROBE_EXT', 256),
+            ('BARO_EXT_BUS', '{i2c_index}'),
+        ),
+    },
     'ina226-power-monitor': {
         'name': 'INA226 power monitor',
         'category': 'Power',

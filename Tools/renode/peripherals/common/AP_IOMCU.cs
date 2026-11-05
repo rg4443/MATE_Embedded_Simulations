@@ -23,6 +23,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             request = new List<byte>();
             setup = new ushort[SetupRegisterCount];
             servos = new ushort[MaxChannels];
+            failsafePwm = new ushort[MaxChannels];
             servoWritten = new bool[MaxChannels];
             AP_PhysicsState.ForMachine(machine).RegisterActuatorSource(this);
             uart.CharReceived += WriteChar;
@@ -37,6 +38,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             lock(servoSync)
             {
                 Array.Clear(servos, 0, servos.Length);
+                Array.Clear(failsafePwm, 0, failsafePwm.Length);
+                lastDirectPwmUs = NowUs;
                 Array.Clear(servoWritten, 0, servoWritten.Length);
                 ignoreSafetyMask = 0;
             }
@@ -93,11 +96,12 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             lock(servoSync)
             {
+                var failsafe = FailsafeActive;
                 for(var channel = 0; channel < MainOutputChannels; channel++)
                 {
                     actuators[channel] = new AP_PhysicsActuator(
-                        servos[channel], AP_PhysicsActuator.ProtocolPwm,
-                        servoWritten[channel] && (safetyOff ||
+                        OutputPwm(channel, failsafe), AP_PhysicsActuator.ProtocolPwm,
+                        (failsafe || servoWritten[channel]) && (safetyOff ||
                             (ignoreSafetyMask & (1U << channel)) != 0) ?
                             AP_PhysicsActuator.FlagValid : (byte)0);
                 }
@@ -122,8 +126,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
             if(code == CodeWrite)
             {
-                WriteRegisters(page, offset, count);
-                SendReply(CodeSuccess, 0, 0, Array.Empty<ushort>());
+                var success = WriteRegisters(page, offset, count);
+                SendReply(success ? CodeSuccess : CodeError, 0, 0, Array.Empty<ushort>());
                 return;
             }
 
@@ -148,7 +152,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     result[i] = register < setup.Length ? setup[register] : (ushort)0;
                     break;
                 case PageServos:
-                    result[i] = register < servos.Length ? servos[register] : (ushort)0;
+                    lock(servoSync)
+                    {
+                        result[i] = register < servos.Length ? OutputPwm(register, FailsafeActive) : (ushort)0;
+                    }
                     break;
                 default:
                     result[i] = 0;
@@ -181,8 +188,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         private ushort ReadStatus(int register)
         {
-            var elapsedUs = (ulong)machine.ElapsedVirtualTime.TimeElapsed.TotalMicroseconds;
-            var timestampMs = (uint)Math.Max(1UL, elapsedUs / 1000);
+            var timestampMs = (uint)Math.Max(1UL, NowUs / 1000);
             switch(register)
             {
             case 0:
@@ -206,12 +212,76 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             }
         }
 
-        private void WriteRegisters(byte page, byte offset, int count)
+        private ulong NowUs => (ulong)machine.ElapsedVirtualTime.TimeElapsed.TotalMicroseconds;
+
+        private bool FailsafeActive => NowUs - lastDirectPwmUs > FmuTimeoutUs;
+
+        private ushort OutputPwm(int channel, bool failsafe)
         {
+            if(!failsafe)
+            {
+                return servos[channel];
+            }
+            return safetyOff ? failsafePwm[channel] : (ushort)0;
+        }
+
+        private ushort RequestValue(int index)
+        {
+            var start = HeaderSize + 2 * index;
+            return (ushort)(request[start] | (request[start + 1] << 8));
+        }
+
+        private bool WriteRegisters(byte page, byte offset, int count)
+        {
+            if(page == PageFailsafePwm)
+            {
+                if(offset != 0 || count != MaxChannels)
+                {
+                    return false;
+                }
+                lock(servoSync)
+                {
+                    for(var i = 0; i < count; i++)
+                    {
+                        failsafePwm[i] = RequestValue(i);
+                    }
+                }
+                return true;
+            }
+
+            if(page == PageDirectPwm)
+            {
+                if(count == 0 || offset + count > MaxChannels)
+                {
+                    return false;
+                }
+                lock(servoSync)
+                {
+                    if(FailsafeActive)
+                    {
+                        for(var i = 0; i < MaxChannels; i++)
+                        {
+                            servos[i] = OutputPwm(i, true);
+                            servoWritten[i] = true;
+                        }
+                    }
+                    for(var i = 0; i < count; i++)
+                    {
+                        var value = RequestValue(i);
+                        if(value != ushort.MaxValue)
+                        {
+                            servos[offset + i] = value;
+                            servoWritten[offset + i] = true;
+                        }
+                    }
+                    lastDirectPwmUs = NowUs;
+                }
+                return true;
+            }
+
             for(var i = 0; i < count; i++)
             {
-                var index = HeaderSize + 2 * i;
-                var value = (ushort)(request[index] | (request[index + 1] << 8));
+                var value = RequestValue(i);
                 var register = offset + i;
                 if(page == PageSetup && register < setup.Length)
                 {
@@ -232,15 +302,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                         }
                     }
                 }
-                else if(page == PageDirectPwm && register < servos.Length)
-                {
-                    lock(servoSync)
-                    {
-                        servos[register] = value;
-                        servoWritten[register] = true;
-                    }
-                }
             }
+            return true;
         }
 
         private void SendReply(byte code, byte page, byte offset, ushort[] registers)
@@ -304,6 +367,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly List<byte> request;
         private readonly ushort[] setup;
         private readonly ushort[] servos;
+        private readonly ushort[] failsafePwm;
+        private ulong lastDirectPwmUs;
         private readonly bool[] servoWritten;
         private readonly object servoSync = new object();
         private volatile bool safetyOff;
@@ -328,6 +393,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const byte PageServos = 3;
         private const byte PageSetup = 50;
         private const byte PageDirectPwm = 54;
+        private const byte PageFailsafePwm = 55;
+        private const ulong FmuTimeoutUs = 200000;
 
         private const int DefaultRateRegister = 3;
         private const int AlternateRateRegister = 4;

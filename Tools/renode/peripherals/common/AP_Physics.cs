@@ -144,13 +144,19 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public static float Pressure(AP_PhysicsTruth truth, uint sampleNumber,
             uint salt, float amplitudePa)
         {
+            return Pressure(truth.PressurePa, sampleNumber, salt, amplitudePa);
+        }
+
+        public static float Pressure(float pressurePa, uint sampleNumber,
+            uint salt, float amplitudePa)
+        {
             // Real pressure sensors never return a bit-identical stream.  The
             // barometer frontend treats two seconds without any change as a
             // failed sensor, so add small, repeatable quantisation noise at
             // the peripheral rather than contaminating physics truth.
             var sample = unchecked(sampleNumber * 1664525U + 1013904223U + salt);
             var unit = (sample & 0xFFFFU) / 32767.5f - 1.0f;
-            return truth.PressurePa + unit * amplitudePa;
+            return pressurePa + unit * amplitudePa;
         }
     }
 

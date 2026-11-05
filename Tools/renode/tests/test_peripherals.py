@@ -143,3 +143,155 @@ pause
     else:
         assert image.read_bytes() == b'\x78\x56\x34\x12' + bytes(4092)
         assert not temporary.exists()
+
+def test_pixhawk6c_compass_and_depth_platform(tmp_path):
+    generated = gen_board.generate(
+        ROOT, 'Pixhawk6C', tmp_path / 'generated',
+        attachments=[{'device': 'keller-depth', 'port': 'I2C1'}])
+    
+    platform = generated['repl'].read_text()
+    
+    assert 'Sensors.AP_IST8310 @ i2c4 0x0C\n    Rotation: 0' in platform
+    assert 'Sensors.AP_RM3100 @ i2c4 0x20\n    Rotation: 8' in platform
+    assert 'Sensors.AP_Baro_KellerLD_Depth @ i2c1 0x40' in platform
+
+
+def test_iomcu_timeout_and_keller_depth(tmp_path, renode):
+    probe = tmp_path / 'Probe.cs'
+    probe.write_text('''
+using System;
+using Antmicro.Renode.Core;
+using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.Miscellaneous;
+using Antmicro.Renode.Peripherals.Sensors;
+using Antmicro.Renode.Peripherals.UART;
+
+namespace Antmicro.Renode.Peripherals.Miscellaneous
+{
+    public class Probe : IDoubleWordPeripheral, IKnownSize, IUART
+    {
+        public Probe(IMachine machine)
+        {
+            io = new AP_IOMCU(machine, this, 0);
+            truth = AP_PhysicsState.ForMachine(machine).Current;
+            depth = new AP_Baro_KellerLD_Depth(machine);
+        }
+
+        public void Configure()
+        {
+            WriteRegisters(50, 12, 22027);
+            var failsafe = new ushort[16];
+            failsafe[0] = 1500;
+            failsafe[1] = 1550;
+            WriteRegisters(55, 0, failsafe);
+            WriteRegisters(54, 0, 1700, 1800);
+        }
+
+        public void Resume() => WriteRegisters(54, 0, 1600);
+        public void SafetyOn() => WriteRegisters(50, 14, 22027);
+
+        public void CheckOutputs(ushort first, ushort second)
+        {
+            var outputs = new AP_PhysicsActuator[AP_PhysicsActuator.Count];
+            io.Sample(outputs);
+            if(outputs[0].Value != first || outputs[1].Value != second)
+            {
+                throw new Exception($"Unexpected PWM: {outputs[0].Value}, {outputs[1].Value}");
+            }
+        }
+
+        public void CheckPressure()
+        {
+            var surface = PressureRaw(0);
+            var atFiveMeters = PressureRaw(5);
+            // Keller's 2 bar calibration uses 32768 counts across its span.
+            if(Math.Abs((atFiveMeters - surface) - 8034) > 2 || Math.Abs(PressureRaw(-1) - surface) > 1)
+            {
+                throw new Exception($"Unexpected pressure samples: {surface}, {atFiveMeters}");
+            }
+            for(var i = 0; i < 128; i++)
+            {
+                if(PressureRaw(0) != surface)
+                {
+                    return;
+                }
+            }
+            throw new Exception("Stationary depth sensor samples never change");
+        }
+
+        private int PressureRaw(double down)
+        {
+            truth.PositionNedM[2] = down;
+            depth.Write(new byte[] { 0xAC });
+            var measurement = depth.Read(5);
+            return (measurement[1] << 8) | measurement[2];
+        }
+
+        private void WriteRegisters(byte page, byte offset, params ushort[] values)
+        {
+            var packet = new byte[4 + 2 * values.Length];
+            packet[0] = (byte)(0x40 | values.Length);
+            packet[2] = page;
+            packet[3] = offset;
+            for(var i = 0; i < values.Length; i++)
+            {
+                packet[4 + 2 * i] = (byte)values[i];
+                packet[5 + 2 * i] = (byte)(values[i] >> 8);
+            }
+            byte crc = 0;
+            foreach(var value in packet)
+            {
+                crc ^= value;
+                for(var bit = 0; bit < 8; bit++)
+                {
+                    crc = (byte)((crc & 0x80) != 0 ? (crc << 1) ^ 0x07 : crc << 1);
+                }
+            }
+            packet[1] = crc;
+            foreach(var value in packet)
+            {
+                CharReceived(value);
+            }
+        }
+
+        public void Reset() => io.Reset();
+        public void WriteChar(byte value) { }
+        public uint ReadDoubleWord(long offset) => 0;
+        public void WriteDoubleWord(long offset, uint value) { }
+        public long Size => 4;
+        public uint BaudRate => 1500000;
+        public Parity ParityBit => Parity.None;
+        public Bits StopBits => Bits.One;
+        public event Action<byte> CharReceived;
+
+        private readonly AP_IOMCU io;
+        private readonly AP_PhysicsTruth truth;
+        private readonly AP_Baro_KellerLD_Depth depth;
+    }
+}
+''')
+    platform = tmp_path / 'probe.repl'
+    platform.write_text('probe: Miscellaneous.Probe @ sysbus 0x1000\n')
+    output = renode(f'''
+$repo=@{ROOT}
+include $repo/Tools/renode/peripherals/common/AP_Physics.cs
+include $repo/Tools/renode/peripherals/common/AP_IOMCU.cs
+include $repo/Tools/renode/peripherals/common/AP_I2CRegisterDevice.cs
+include $repo/Tools/renode/peripherals/sensors/AP_AdditionalBarometers.cs
+include @{probe}
+mach create
+machine LoadPlatformDescription @{platform}
+sysbus.probe Configure
+emulation RunFor "0.199"
+sysbus.probe CheckOutputs 1700 1800
+emulation RunFor "0.002"
+sysbus.probe CheckOutputs 1500 1550
+sysbus.probe Resume
+sysbus.probe CheckOutputs 1600 1550
+emulation RunFor "0.201"
+sysbus.probe SafetyOn
+sysbus.probe CheckOutputs 0 0
+sysbus.probe CheckPressure
+echo "Peripheral checks passed"
+''')
+    assert 'Peripheral checks passed' in output

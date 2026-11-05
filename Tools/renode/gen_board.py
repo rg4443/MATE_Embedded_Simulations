@@ -1105,6 +1105,33 @@ def _sensor_devices(config, family, defines, fram_path, warnings,
         else:
             declarations += [i2c_declaration % model, '']
 
+    compass_models = {'IST8310': 'Sensors.AP_IST8310', 'RM3100': 'Sensors.AP_RM3100'}
+    compass_locations = imu_locations | baro_locations
+
+    for index, compass in enumerate(config.compass_list):
+        model = compass_models.get(compass.driver)
+
+        if model is None or compass.probe != 'probe' or not compass.devlist: continue
+        
+        device = compass.devlist[0]
+
+        if getattr(device, 'buses_to_probe', None) != 'SINGLE': continue
+        if not 0 <= device.busnum < len(i2c_order): continue
+        
+        bus = i2c_order[device.busnum]
+        rotation = ROTATIONS.get(compass.rotation)
+        location = (bus, device.busaddr)
+
+        if bus not in family['i2cs'] or rotation is None or location in compass_locations: continue
+       
+        compass_locations.add(location)
+
+        declarations += [
+            'compass%d: %s @ %s 0x%02X' % (index, model, bus.lower(), device.busaddr),
+            '    Rotation: %u' % rotation,
+            '',
+        ]
+        
     has_fram = defines.get('HAL_WITH_RAMTRON', '0') != '0'
     if has_fram:
         device = spi_devices.get('ramtron')
