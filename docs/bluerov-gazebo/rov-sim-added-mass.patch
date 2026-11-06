@@ -1,8 +1,14 @@
 diff --git a/src/EER_Hydrodynamics.cc b/src/EER_Hydrodynamics.cc
 --- a/src/EER_Hydrodynamics.cc
 +++ b/src/EER_Hydrodynamics.cc
-@@ -496,9 +496,9 @@
- 
+@@ -497,7 +497,7 @@
    this->dataPtr->prevState = state;
  
+-  // The added mass
+-  // Negative sign signifies the behaviour change
+-  const Eigen::VectorXd kAmassVec = - this->dataPtr->Ma * stateDot;
++  // The total wrench is negated before application, so positive added mass
++  // contributes an applied force that opposes acceleration.
 +  const Eigen::VectorXd kAmassVec = this->dataPtr->Ma * stateDot;
+
+   // Coriolis and Centripetal forces for under water vehicles (Fossen P. 37)
