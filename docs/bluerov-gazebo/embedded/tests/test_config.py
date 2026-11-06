@@ -1,9 +1,9 @@
 import copy
 import json
-import math
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 EMBEDDED = Path(__file__).resolve().parents[1]
@@ -11,8 +11,6 @@ sys.path.insert(0, str(EMBEDDED))
 
 from validate_config import ConfigError, generate, validate  # noqa: E402
 
-from launch import launch as launch_probe  # noqa: E402
-from step5 import launch as launch_architecture  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -26,44 +24,48 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(len(resolved["plant"]["motor_positions_m"]), 6)
         self.assertEqual(resolved["plant"]["wrench_rank"], 5)
 
-    def test_heave_mass_boundary(self):
-        limit = generate.HEAVE_ADDED_MASS_KG
+    def test_light_model_uses_native_added_mass(self):
+        self.config["plant"]["mass_kg"] = 5.0
+        resolved = validate(self.config)
 
-        for mass in (5.0, limit):
-            with self.subTest(mass=mass):
-                self.config["plant"]["mass_kg"] = mass
-                with self.assertRaisesRegex(ConfigError, "heave added mass"):
-                    validate(self.config)
-
-        mass = math.nextafter(limit, math.inf)
-        self.config["plant"]["mass_kg"] = mass
-        self.assertEqual(validate(self.config)["plant"]["mass_kg"], mass)
-
-    def test_direct_generator_rejects_light_model_before_writing(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "model"
-            with self.assertRaisesRegex(ValueError, "heave added mass"):
-                generate.write_model(output, "bluerov2", generate.FRAMES["bluerov2"],
-                                     Path(tmp) / "connector.dylib", "dylib", mass_kg=5.0)
-            
-            self.assertFalse(output.exists())
 
-    def test_launchers_reject_previously_prepared_light_run(self):
-        resolved = validate(self.config)
-        resolved["plant"]["mass_kg"] = 5.0
+            generate.write_model(output, "bluerov2", generate.FRAMES["bluerov2"],
+                                 Path(tmp) / "connector.dylib", "dylib", mass_kg=resolved["plant"]["mass_kg"])
 
+            root = ET.parse(output / "model.sdf").getroot()
+            model = root.find("model")
+            plugin = model.find("plugin[@name='gz::sim::systems::EER_Hydrodynamics']")
+
+            self.assertEqual(root.get("version"), "1.11")
+            self.assertEqual(model.findtext("link/inertial/fluid_added_mass/zz"), "6.64814797")
+            self.assertIsNone(plugin.find("zDotW"))
+            self.assertEqual(plugin.findtext("disable_added_mass"), "true")
+            self.assertEqual(plugin.findtext("disable_coriolis"), "true")
+
+    def test_legacy_added_mass_is_migrated_once(self):
+        root = ET.fromstring(
+            '<sdf version="1.7"><model><link name="rov_body"><inertial/></link>'
+            '<plugin name="gz::sim::systems::EER_Hydrodynamics"><link_name>rov_body</link_name>'
+            '<zDotW>7.5</zDotW></plugin></model></sdf>')
+
+        generate.use_native_added_mass(root)
+        generate.use_native_added_mass(root)
+
+        self.assertEqual(root.findtext("model/link/inertial/fluid_added_mass/zz"), "7.5")
+        self.assertEqual(len(root.findall("model/link/inertial/fluid_added_mass")), 1)
+        self.assertIsNone(root.find("model/plugin/zDotW"))
+
+    def test_direct_generator_rejects_nonpositive_body_mass(self):
         with tempfile.TemporaryDirectory() as tmp:
-            run_dir = Path(tmp)
+            output = Path(tmp) / "model"
 
-            (run_dir / "manifest.json").write_text(json.dumps({"status": "prepared_not_executed"}))
-            (run_dir / "resolved.json").write_text(json.dumps(resolved))
-            
-            for launch in (launch_probe, launch_architecture):
-                with self.subTest(launcher=launch.__module__):
-                    with self.assertRaisesRegex(ConfigError, "heave added mass"):
-                        launch(run_dir)
-                        
-            self.assertFalse((run_dir / "sessions").exists())
+            with self.assertRaisesRegex(ValueError, "combined T200 thruster mass"):
+                generate.write_model(output, "bluerov2", generate.FRAMES["bluerov2"],
+                                     Path(tmp) / "connector.dylib", "dylib", mass_kg=2.0)
+
+            self.assertFalse(output.exists())
 
     def test_swapped_motor_channel_is_rejected(self):
         invalid = copy.deepcopy(self.config)
