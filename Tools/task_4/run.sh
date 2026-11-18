@@ -8,7 +8,7 @@ state_dir="$task_dir/.local"
 layout=${2:-bluerov2}
 
 if [[ $(uname -s) != Linux ]]; then
-    echo "Run this inside ubuntu. See Tools/task_4/SETUP.md." >&2
+    echo "Run this inside ubuntu; see Tools/task_4/SETUP.md." >&2
     exit 1
 fi
 
@@ -56,7 +56,7 @@ case "${1:-}" in
         ;;
     sitl)
         [[ -x "$repo_root/build/sitl/bin/ardusub" ]] || {
-            echo "Build ArduSub SITL first: ./waf configure --board sitl && ./waf sub" >&2
+            echo "Build ardusub sitl first: ./waf configure --board sitl && ./waf sub" >&2
             exit 1
         }
         [[ -f "$package_dir/generated/params/$layout.parm" ]] || {
