@@ -26,7 +26,7 @@ case "${1:-}" in
             "$state_dir/blueos/logs" "$state_dir/blueos/userdata"
 
         exec docker run --rm --name mate-task-4-blueos \
-            --privileged --network host --pid host \
+            --network host \
             -e BLUEOS_DISABLE_SERVICES=cable_guy,wifi,commander \
             -e BLUEOS_DISABLE_MEMORY_LIMIT=true \
             -e BLUEOS_DISABLE_STARTUP_UPDATE=true \
