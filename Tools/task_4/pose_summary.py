@@ -38,7 +38,7 @@ def samples_from(path, model):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=Path)
-    parser.add_argument("--model", default="bluerov2_test")
+    parser.add_argument("--model", default="bluerov1_test")
     args = parser.parse_args()
 
     samples = samples_from(args.path, args.model)

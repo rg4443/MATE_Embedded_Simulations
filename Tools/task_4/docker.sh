@@ -51,8 +51,11 @@ case "${1:-}" in
         fi
 
         start_sim
+        docker cp "$task_dir/run.sh" "$sim:/work/Tools/task_4/run.sh"
+        docker cp "$task_dir/pose_summary.py" "$sim:/work/Tools/task_4/pose_summary.py"
+
         docker exec "$sim" test -x /work/Tools/task_4/.local/build/task_4_topside
-        docker exec "$sim" test -f /work/docs/bluerov-gazebo/generated/worlds/bluerov2.sdf
+        docker exec "$sim" test -f /work/docs/bluerov-gazebo/generated/worlds/bluerov1.sdf
 
         docker exec -d "$sim" sh -lc 'Xvfb :99 -screen 0 1280x800x24 -nolisten tcp > /work/Tools/task_4/.local/xvfb.log 2>&1'
         for ((i = 0; i < 50; i++)); do
@@ -64,9 +67,9 @@ case "${1:-}" in
         docker exec -d -e DISPLAY=:99 "$sim" sh -lc 'openbox > /work/Tools/task_4/.local/openbox.log 2>&1'
         docker exec -d "$sim" sh -lc 'x11vnc -display :99 -nopw -forever -shared -rfbport 5900 -listen 127.0.0.1 > /work/Tools/task_4/.local/vnc.log 2>&1'
         docker exec -d "$sim" sh -lc 'websockify --web=/usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 > /work/Tools/task_4/.local/websockify.log 2>&1'
-        docker exec -d -e DISPLAY=:99 "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh gazebo bluerov2 > Tools/task_4/.local/gazebo.log 2>&1'
-        docker exec -d -e DISPLAY=:99 "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh gui bluerov2 > Tools/task_4/.local/gui.log 2>&1'
-        docker exec -d "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh sitl bluerov2 > Tools/task_4/.local/sitl.log 2>&1'
+        docker exec -d -e DISPLAY=:99 "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh gazebo bluerov1 > Tools/task_4/.local/gazebo.log 2>&1'
+        docker exec -d -e DISPLAY=:99 "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh gui bluerov1 > Tools/task_4/.local/gui.log 2>&1'
+        docker exec -d "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh sitl bluerov1 > Tools/task_4/.local/sitl.log 2>&1'
 
         mkdir -p "$state_dir/config" "$state_dir/blueos" "$state_dir/logs" "$state_dir/userdata"
         docker run -d --name "$blueos" --network "$network" \

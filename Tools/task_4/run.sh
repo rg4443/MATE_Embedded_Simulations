@@ -5,7 +5,7 @@ task_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$task_dir/../.." && pwd)
 package_dir="$repo_root/docs/bluerov-gazebo"
 state_dir="$task_dir/.local"
-layout=${2:-bluerov2}
+layout=${2:-bluerov1}
 
 if [[ $(uname -s) != Linux ]]; then
     echo "Run this inside ubuntu; see Tools/task_4/SETUP.md." >&2
