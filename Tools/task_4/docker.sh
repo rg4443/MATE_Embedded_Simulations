@@ -45,12 +45,22 @@ case "${1:-}" in
         docker exec "$sim" sh -lc 'git config --global --add safe.directory /work && cd /work && ./waf configure --board sitl && ./waf sub -j4 && bash docs/bluerov-gazebo/prepare_wsl.sh && cmake -S Tools/task_4 -B Tools/task_4/.local/build && cmake --build Tools/task_4/.local/build -j4'
         ;;
     start)
+        blueos_exists=false
         if docker container inspect "$blueos" >/dev/null 2>&1; then
-            echo "Blueos is already started; stop this stack before starting it again." >&2
-            exit 1
+            blueos_exists=true
+
+            if [[ $(docker container inspect "$blueos" --format '{{.State.Running}}') == true ]]; then
+                echo "Blueos is already running; stop this stack before starting it again." >&2
+                exit 1
+            fi
         fi
 
-        start_sim
+        if docker container inspect "$sim" >/dev/null 2>&1; then
+            docker restart "$sim" >/dev/null
+        else
+            start_sim
+        fi
+
         docker cp "$task_dir/run.sh" "$sim:/work/Tools/task_4/run.sh"
         docker cp "$task_dir/pose_summary.py" "$sim:/work/Tools/task_4/pose_summary.py"
 
@@ -71,17 +81,21 @@ case "${1:-}" in
         docker exec -d -e DISPLAY=:99 "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh gui bluerov1 > Tools/task_4/.local/gui.log 2>&1'
         docker exec -d "$sim" sh -lc 'cd /work && bash Tools/task_4/run.sh sitl bluerov1 > Tools/task_4/.local/sitl.log 2>&1'
 
-        mkdir -p "$state_dir/config" "$state_dir/blueos" "$state_dir/logs" "$state_dir/userdata"
-        docker run -d --name "$blueos" --network "$network" \
-            -p 127.0.0.1:80:80 \
-            -e BLUEOS_DISABLE_SERVICES=cable_guy,wifi,commander \
-            -e BLUEOS_DISABLE_MEMORY_LIMIT=true \
-            -e BLUEOS_DISABLE_STARTUP_UPDATE=true \
-            -v "$state_dir/config:/root/.config" \
-            -v "$state_dir/blueos:/etc/blueos" \
-            -v "$state_dir/logs:/var/logs/blueos" \
-            -v "$state_dir/userdata:/usr/blueos/userdata" \
-            bluerobotics/blueos-core:master >/dev/null
+        if [[ "$blueos_exists" == true ]]; then
+            docker start "$blueos" >/dev/null
+        else
+            mkdir -p "$state_dir/config" "$state_dir/blueos" "$state_dir/logs" "$state_dir/userdata"
+            docker run -d --name "$blueos" --network "$network" \
+                -p 127.0.0.1:80:80 \
+                -e BLUEOS_DISABLE_SERVICES=cable_guy,wifi,commander \
+                -e BLUEOS_DISABLE_MEMORY_LIMIT=true \
+                -e BLUEOS_DISABLE_STARTUP_UPDATE=true \
+                -v "$state_dir/config:/root/.config" \
+                -v "$state_dir/blueos:/etc/blueos" \
+                -v "$state_dir/logs:/var/logs/blueos" \
+                -v "$state_dir/userdata:/usr/blueos/userdata" \
+                bluerobotics/blueos-core:master >/dev/null
+        fi
 
         echo "Blueos dashboard: http://127.0.0.1/"
         echo "Gazebo gui: http://127.0.0.1:16080/vnc.html"
