@@ -67,6 +67,7 @@ case "${1:-}" in
         docker exec "$sim" test -x /work/Tools/task_4/.local/build/task_4_topside
         docker exec "$sim" test -f /work/docs/bluerov-gazebo/generated/worlds/bluerov1.sdf
 
+        docker exec "$sim" rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
         docker exec -d "$sim" sh -lc 'Xvfb :99 -screen 0 1280x800x24 -nolisten tcp > /work/Tools/task_4/.local/xvfb.log 2>&1'
         for ((i = 0; i < 50; i++)); do
             if docker exec "$sim" test -S /tmp/.X11-unix/X99; then break; fi
